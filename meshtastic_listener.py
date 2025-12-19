@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+import meshtastic
+import meshtastic.serial_interface
+from pubsub import pub
+from datetime import datetime
+import time
+import sys
+
+# Force unbuffered output so Node.js can read it in real-time
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
+# Custom node name mapping
+NODE_NAMES = {
+    0x33687054: "Node No Battery",
+    0x336879dc: "Node Battery"
+}
+
+# Store telemetry data for each node
+node_telemetry = {}
+
+def format_coordinates(latitude, longitude):
+    """Format coordinates for Google Maps"""
+    if latitude and longitude:
+        return f"{latitude:.6f}, {longitude:.6f}"
+    return "N/A"
+
+def get_google_maps_link(latitude, longitude):
+    """Generate Google Maps link"""
+    if latitude and longitude:
+        return f"https://maps.google.com/?q={latitude},{longitude}"
+    return None
+
+def get_node_name(sender_id, interface):
+    """Get node name from custom mapping or device info"""
+    sender_name = NODE_NAMES.get(sender_id, "Receiver")
+    if sender_name == "Receiver" and sender_id in interface.nodes:
+        node = interface.nodes[sender_id]
+        if 'user' in node and 'longName' in node['user']:
+            sender_name = node['user']['longName']
+        elif 'user' in node and 'shortName' in node['user']:
+            sender_name = node['user']['shortName']
+    return sender_name
+
+def get_battery_info(sender_id):
+    """Get battery information for a node from cached telemetry"""
+    if sender_id in node_telemetry:
+        telemetry = node_telemetry[sender_id]
+        voltage = telemetry.get('voltage')
+        battery_level = telemetry.get('batteryLevel')
+        
+        if voltage and battery_level is not None:
+            return f"{voltage:.2f}V ({battery_level}%)"
+        elif voltage:
+            return f"{voltage:.2f}V"
+        elif battery_level is not None:
+            return f"{battery_level}%"
+    
+    return "N/A"
+
+def onTelemetry(packet, interface):
+    """Handle telemetry updates (battery, voltage, etc.)"""
+    if 'decoded' in packet and 'telemetry' in packet['decoded']:
+        sender_id = packet['from']
+        sender_name = get_node_name(sender_id, interface)
+        
+        # Skip telemetry from "Receiver" node
+        if sender_name == "Receiver":
+            # Still store it for battery info, but don't print
+            telemetry = packet['decoded']['telemetry']
+            if 'deviceMetrics' in telemetry:
+                metrics = telemetry['deviceMetrics']
+                node_telemetry[sender_id] = {
+                    'batteryLevel': metrics.get('batteryLevel'),
+                    'voltage': metrics.get('voltage'),
+                    'channelUtilization': metrics.get('channelUtilization'),
+                    'airUtilTx': metrics.get('airUtilTx'),
+                    'uptimeSeconds': metrics.get('uptimeSeconds'),
+                    'timestamp': datetime.now()
+                }
+            return  # Don't print telemetry for receiver
+        
+        telemetry = packet['decoded']['telemetry']
+        
+        # Check for device metrics (battery, voltage, etc.)
+        if 'deviceMetrics' in telemetry:
+            metrics = telemetry['deviceMetrics']
+            
+            # Store telemetry data for this node
+            node_telemetry[sender_id] = {
+                'batteryLevel': metrics.get('batteryLevel'),
+                'voltage': metrics.get('voltage'),
+                'channelUtilization': metrics.get('channelUtilization'),
+                'airUtilTx': metrics.get('airUtilTx'),
+                'uptimeSeconds': metrics.get('uptimeSeconds'),
+                'timestamp': datetime.now()
+            }
+            
+            battery_level = metrics.get('batteryLevel', 'N/A')
+            voltage = metrics.get('voltage', 'N/A')
+            channel_util = metrics.get('channelUtilization', 'N/A')
+            air_util = metrics.get('airUtilTx', 'N/A')
+            uptime = metrics.get('uptimeSeconds', 'N/A')
+            
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            print(f"\n{'='*60}")
+            print(f"📊 TELEMETRY [{timestamp}]")
+            print(f"From: {sender_name}")
+            print(f"Battery: {battery_level}% | Voltage: {voltage}V")
+            print(f"Channel Util: {channel_util}% | Air Util TX: {air_util}%")
+            if uptime != 'N/A':
+                uptime_hours = uptime / 3600
+                print(f"Uptime: {uptime_hours:.1f} hours")
+            print(f"{'='*60}\n")
+            sys.stdout.flush()
+
+def onReceive(packet, interface):
+    """Handle text messages"""
+    if 'decoded' in packet and 'text' in packet['decoded']:
+        sender_id = packet['from']
+        message = packet['decoded']['text']
+        rssi = packet.get('rxRssi', 'N/A')
+        snr = packet.get('rxSnr', 'N/A')
+        
+        # Get timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if 'rxTime' in packet:
+            timestamp = datetime.fromtimestamp(packet['rxTime']).strftime("%Y-%m-%d %H:%M:%S")
+        
+        sender_name = get_node_name(sender_id, interface)
+        battery_info = get_battery_info(sender_id)
+        
+        # Get GPS position
+        latitude = None
+        longitude = None
+        altitude = None
+        
+        if sender_id in interface.nodes:
+            node = interface.nodes[sender_id]
+            if 'position' in node:
+                pos = node['position']
+                if 'latitude' in pos and 'longitude' in pos:
+                    latitude = pos['latitude']
+                    longitude = pos['longitude']
+                if 'altitude' in pos:
+                    altitude = pos['altitude']
+        
+        # Format GPS information
+        coords = format_coordinates(latitude, longitude)
+        location_info = coords if coords != "N/A" else "N/A"
+        altitude_info = f"{altitude}m" if altitude else "N/A"
+        
+        print(f"\n{'='*60}")
+        print(f"📨 MESSAGE [{timestamp}]")
+        print(f"From: {sender_name}")
+        print(f"{message}")
+        print(f"RSSI: {rssi} dBm | SNR: {snr} dB | Battery: {battery_info}")
+        
+        if coords != "N/A":
+            maps_link = get_google_maps_link(latitude, longitude)
+            if maps_link:
+                print(f"Map: {maps_link}")
+        
+        print(f"{'='*60}\n")
+        sys.stdout.flush()
+
+def onPosition(packet, interface):
+    """Handle position updates"""
+    if 'decoded' in packet and 'position' in packet['decoded']:
+        sender_id = packet['from']
+        position = packet['decoded']['position']
+        
+        latitude = position.get('latitude')
+        longitude = position.get('longitude')
+        altitude = position.get('altitude')
+        
+        # Skip if no valid coordinates
+        if not latitude or not longitude:
+            return
+        
+        rssi = packet.get('rxRssi', 'N/A')
+        snr = packet.get('rxSnr', 'N/A')
+        
+        # Get timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if 'rxTime' in packet:
+            timestamp = datetime.fromtimestamp(packet['rxTime']).strftime("%Y-%m-%d %H:%M:%S")
+        
+        sender_name = get_node_name(sender_id, interface)
+        battery_info = get_battery_info(sender_id)
+        
+        # Format GPS information
+        coords = format_coordinates(latitude, longitude)
+        altitude_info = f"{altitude}m" if altitude else "N/A"
+        
+        print(f"\n{'='*60}")
+        print(f"📍 POSITION UPDATE [{timestamp}]")
+        print(f"From: {sender_name}")
+        print(f"Location: {coords} | Altitude: {altitude_info}")
+        print(f"RSSI: {rssi} dBm | SNR: {snr} dB | Battery: {battery_info}")
+        
+        maps_link = get_google_maps_link(latitude, longitude)
+        if maps_link:
+            print(f"Map: {maps_link}")
+        
+        print(f"{'='*60}\n")
+        sys.stdout.flush()
+
+# Connect
+print("Connecting to Meshtastic device...")
+sys.stdout.flush()
+
+interface = meshtastic.serial_interface.SerialInterface('/dev/ttyUSB0')
+
+# Subscribe to messages, position updates, and telemetry
+pub.subscribe(onReceive, "meshtastic.receive.text")
+pub.subscribe(onPosition, "meshtastic.receive.position")
+pub.subscribe(onTelemetry, "meshtastic.receive.telemetry")
+
+print("Listening for messages, position updates, and telemetry...\n")
+sys.stdout.flush()
+
+try:
+    while True:
+        time.sleep(0.1)
+except KeyboardInterrupt:
+    print("\nStopping...")
+    interface.close()
