@@ -1,1 +1,2 @@
-Add Docker Support
+meshtastic==2.2.0
+pubsub==0.1.2
