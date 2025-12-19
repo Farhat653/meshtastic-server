@@ -231,29 +231,52 @@ io.on('connection', (socket) => {
     });
 });
 
-// Start Python listener
-const pythonProcess = spawn('python3', ['-u', 'meshtastic_listener.py']);
+// Start Python listener only if enabled (not on cloud)
+let pythonProcess = null;
+if (process.env.ENABLE_PYTHON_LISTENER !== 'false') {
+    console.log('Starting Python listener...');
+    pythonProcess = spawn('python3', ['-u', 'meshtastic_listener.py']);
 
-pythonProcess.stdout.on('data', (data) => {
-    console.log(data.toString());
-    parsePythonOutput(data);
-});
+    pythonProcess.stdout.on('data', (data) => {
+        console.log(data.toString());
+        parsePythonOutput(data);
+    });
 
-pythonProcess.stderr.on('data', (data) => {
-    console.error(`Python Error: ${data}`);
-});
+    pythonProcess.stderr.on('data', (data) => {
+        console.error(`Python Error: ${data}`);
+    });
 
-pythonProcess.on('close', (code) => {
-    console.log(`Python process exited with code ${code}`);
-});
+    pythonProcess.on('close', (code) => {
+        console.log(`Python process exited with code ${code}`);
+    });
+} else {
+    console.log('Python listener disabled - running in cloud mode');
+    console.log('To receive data, send messages via POST /api/message endpoint');
+}
 
 // Health check endpoint
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
         uptime: process.uptime(),
-        connections: connectedClients.size 
+        connections: connectedClients.size,
+        pythonListenerEnabled: process.env.ENABLE_PYTHON_LISTENER !== 'false'
     });
+});
+
+// API endpoint to receive messages from external sources (like local Python listener)
+app.use(express.json());
+app.post('/api/message', (req, res) => {
+    const { type, data } = req.body;
+    
+    if (!type || !data) {
+        return res.status(400).json({ error: 'Missing type or data' });
+    }
+    
+    // Process the packet as if it came from Python
+    processPacket(data);
+    
+    res.json({ success: true, message: 'Data received and broadcast' });
 });
 
 // Start server
@@ -265,6 +288,8 @@ server.listen(PORT, '0.0.0.0', () => {
 // Cleanup
 process.on('SIGINT', () => {
     console.log('\nShutting down...');
-    pythonProcess.kill();
+    if (pythonProcess) {
+        pythonProcess.kill();
+    }
     process.exit();
 });
