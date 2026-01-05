@@ -72,7 +72,7 @@ def get_battery_info(sender_id):
     return "N/A"
 
 def send_to_cloud(packet_data):
-    """Send packet data to cloud server"""
+    """Send packet data to cloud server queue"""
     if not CLOUD_MODE:
         return
     
@@ -80,6 +80,7 @@ def send_to_cloud(packet_data):
         message_queue.put(packet_data)
     except Exception as e:
         print(f"Error queuing message: {e}")
+        sys.stdout.flush()
 
 def cloud_sender_thread():
     """Background thread to send messages to cloud in batches"""
@@ -89,7 +90,8 @@ def cloud_sender_thread():
     batch = []
     last_send_time = time.time()
     
-    print(f"Cloud sender started - forwarding to {SERVER_URL}")
+    print(f"☁️  Cloud sender started - forwarding to {SERVER_URL}")
+    sys.stdout.flush()
     
     while True:
         try:
@@ -114,17 +116,20 @@ def cloud_sender_thread():
                         timeout=10
                     )
                     if response.status_code == 200:
-                        print(f"✓ Sent {len(batch)} messages to cloud")
+                        print(f"☁️  ✓ Sent {len(batch)} messages to cloud")
                     else:
-                        print(f"✗ Cloud returned {response.status_code}")
+                        print(f"☁️  ✗ Cloud returned {response.status_code}")
+                    sys.stdout.flush()
                 except requests.exceptions.RequestException as e:
-                    print(f"✗ Failed to send to cloud: {e}")
+                    print(f"☁️  ✗ Failed to send to cloud: {e}")
+                    sys.stdout.flush()
                 
                 batch.clear()
                 last_send_time = current_time
                 
         except Exception as e:
             print(f"Cloud sender error: {e}")
+            sys.stdout.flush()
             time.sleep(1)
 
 def onTelemetry(packet, interface):
@@ -316,9 +321,9 @@ def onPosition(packet, interface):
 # Connect
 print("Connecting to Meshtastic device...")
 if CLOUD_MODE:
-    print(f"Cloud mode enabled - will forward to {SERVER_URL}")
+    print(f"☁️  Cloud mode enabled - will forward to {SERVER_URL}")
 else:
-    print("Local mode - no cloud forwarding")
+    print("🏠 Local mode - no cloud forwarding")
 sys.stdout.flush()
 
 interface = meshtastic.serial_interface.SerialInterface('/dev/ttyUSB0')
