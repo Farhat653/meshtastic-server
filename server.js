@@ -35,19 +35,19 @@ app.use(helmet({
 
 // Rate limiting for API endpoints
 const apiLimiter = rateLimit({
-    windowMs: 1 * 60 * 1000, // 1 minute
-    max: 100, // 100 requests per minute per IP
+    windowMs: 1 * 60 * 1000,
+    max: 200,
     message: 'Too many requests from this IP'
 });
 
 // General rate limiting
-const generalLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 500 // limit each IP to 500 requests per windowMs
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 500
 });
 
 app.use('/api/', apiLimiter);
-app.use(generalLimiter);
+app.use(limiter);
 
 // Serve static files
 app.use(express.static('public'));
@@ -147,7 +147,7 @@ function parsePythonOutput(data) {
 }
 
 function processPacket(packet) {
-    console.log('Processing packet:', packet.type, 'from', packet.from);
+    console.log(`Processing ${packet.type} from ${packet.from}`);
     
     if (packet.type === 'telemetry' && packet.from) {
         const telemetryData = {
@@ -172,7 +172,7 @@ function processPacket(packet) {
             ...telemetryData
         });
         
-        console.log(`Updated telemetry for ${packet.from}: ${packet.battery}`);
+        console.log(`✓ Telemetry broadcast for ${packet.from}`);
     }
     
     if (packet.type === 'message' && packet.message) {
@@ -187,7 +187,7 @@ function processPacket(packet) {
             recentMessages.shift();
         }
         io.emit('new-message', packet);
-        console.log(`Broadcast message from ${packet.from}`);
+        console.log(`✓ Message broadcast from ${packet.from}`);
     }
     
     if (packet.location) {
@@ -212,7 +212,7 @@ function processPacket(packet) {
             
             nodePositions.set(packet.from, posData);
             io.emit('position-update', posData);
-            console.log(`Updated position for ${packet.from}: ${lat}, ${lng}`);
+            console.log(`✓ Position broadcast for ${packet.from}: ${lat}, ${lng}`);
         }
     }
 }
@@ -222,7 +222,6 @@ const connectedClients = new Set();
 const MAX_CLIENTS = 100;
 
 io.on('connection', (socket) => {
-    // Limit concurrent connections
     if (connectedClients.size >= MAX_CLIENTS) {
         console.log('Max clients reached, rejecting connection');
         socket.disconnect();
@@ -259,10 +258,10 @@ io.on('connection', (socket) => {
     });
 });
 
-// Start Python listener only if enabled (for local development)
+// Start Python listener only if enabled (local mode)
 let pythonProcess = null;
 if (process.env.ENABLE_PYTHON_LISTENER === 'true') {
-    console.log('Starting Python listener...');
+    console.log('Starting local Python listener...');
     pythonProcess = spawn('python3', ['-u', 'meshtastic_listener.py']);
 
     pythonProcess.stdout.on('data', (data) => {
@@ -278,8 +277,10 @@ if (process.env.ENABLE_PYTHON_LISTENER === 'true') {
         console.log(`Python process exited with code ${code}`);
     });
 } else {
-    console.log('Python listener disabled - running in cloud mode');
-    console.log('Waiting for data from remote clients via /api/message endpoint');
+    console.log('═══════════════════════════════════════════');
+    console.log('Running in CLOUD MODE');
+    console.log('Waiting for data from Raspberry Pi...');
+    console.log('═══════════════════════════════════════════');
 }
 
 // Health check endpoint
@@ -288,14 +289,14 @@ app.get('/health', (req, res) => {
         status: 'ok', 
         uptime: process.uptime(),
         connections: connectedClients.size,
-        pythonListenerEnabled: process.env.ENABLE_PYTHON_LISTENER === 'true',
+        mode: process.env.ENABLE_PYTHON_LISTENER === 'true' ? 'local' : 'cloud',
         messages: recentMessages.length,
         positions: nodePositions.size,
         nodes: Array.from(nodePositions.keys())
     });
 });
 
-// API endpoint to receive messages from external sources (Raspberry Pi)
+// API endpoint to receive data from Raspberry Pi
 app.post('/api/message', (req, res) => {
     console.log('Received POST to /api/message');
     const { type, data } = req.body;
@@ -306,14 +307,12 @@ app.post('/api/message', (req, res) => {
     }
     
     console.log(`Processing ${type} packet from ${data.from}`);
-    
-    // Process the packet as if it came from Python
     processPacket(data);
     
     res.json({ success: true, message: 'Data received and broadcast' });
 });
 
-// Batch endpoint for multiple messages at once (more efficient)
+// Batch endpoint for multiple messages
 app.post('/api/messages/batch', (req, res) => {
     console.log('Received batch POST to /api/messages/batch');
     const { messages } = req.body;
@@ -330,11 +329,11 @@ app.post('/api/messages/batch', (req, res) => {
         }
     }
     
-    console.log(`Processed ${processed} messages in batch`);
+    console.log(`✓ Processed ${processed} messages in batch`);
     res.json({ success: true, processed });
 });
 
-// Debug endpoint to view current state (remove in production)
+// Debug endpoint (remove in production)
 app.get('/api/debug', (req, res) => {
     res.json({
         messages: recentMessages,
@@ -346,12 +345,12 @@ app.get('/api/debug', (req, res) => {
 
 // Start server
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`=================================`);
+    console.log('═══════════════════════════════════════════');
     console.log(`Server running on port ${PORT}`);
     console.log(`Mode: ${process.env.ENABLE_PYTHON_LISTENER === 'true' ? 'LOCAL' : 'CLOUD'}`);
-    console.log(`WebSocket endpoint: ws://0.0.0.0:${PORT}`);
-    console.log(`API endpoint: http://0.0.0.0:${PORT}/api/message`);
-    console.log(`=================================`);
+    console.log(`Health: http://0.0.0.0:${PORT}/health`);
+    console.log(`API: http://0.0.0.0:${PORT}/api/message`);
+    console.log('═══════════════════════════════════════════');
 });
 
 // Cleanup
