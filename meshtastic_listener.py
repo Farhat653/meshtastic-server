@@ -5,10 +5,23 @@ from pubsub import pub
 from datetime import datetime
 import time
 import sys
+import os
+import requests
+from threading import Thread
+from queue import Queue
 
 # Force unbuffered output so Node.js can read it in real-time
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
+
+# Cloud server configuration
+SERVER_URL = os.getenv('SERVER_URL', None)
+CLOUD_MODE = SERVER_URL is not None
+
+# Message queue for batch sending
+message_queue = Queue()
+BATCH_SIZE = 5
+BATCH_TIMEOUT = 3  # seconds
 
 # Custom node name mapping
 NODE_NAMES = {
@@ -58,27 +71,67 @@ def get_battery_info(sender_id):
     
     return "N/A"
 
+def send_to_cloud(packet_data):
+    """Send packet data to cloud server"""
+    if not CLOUD_MODE:
+        return
+    
+    try:
+        message_queue.put(packet_data)
+    except Exception as e:
+        print(f"Error queuing message: {e}")
+
+def cloud_sender_thread():
+    """Background thread to send messages to cloud in batches"""
+    if not CLOUD_MODE:
+        return
+    
+    batch = []
+    last_send_time = time.time()
+    
+    print(f"Cloud sender started - forwarding to {SERVER_URL}")
+    
+    while True:
+        try:
+            # Try to get a message with timeout
+            try:
+                msg = message_queue.get(timeout=1)
+                batch.append(msg)
+            except:
+                pass
+            
+            current_time = time.time()
+            should_send = (
+                len(batch) >= BATCH_SIZE or 
+                (len(batch) > 0 and (current_time - last_send_time) >= BATCH_TIMEOUT)
+            )
+            
+            if should_send and batch:
+                try:
+                    response = requests.post(
+                        f"{SERVER_URL}/api/messages/batch",
+                        json={'messages': batch},
+                        timeout=10
+                    )
+                    if response.status_code == 200:
+                        print(f"✓ Sent {len(batch)} messages to cloud")
+                    else:
+                        print(f"✗ Cloud returned {response.status_code}")
+                except requests.exceptions.RequestException as e:
+                    print(f"✗ Failed to send to cloud: {e}")
+                
+                batch.clear()
+                last_send_time = current_time
+                
+        except Exception as e:
+            print(f"Cloud sender error: {e}")
+            time.sleep(1)
+
 def onTelemetry(packet, interface):
     """Handle telemetry updates (battery, voltage, etc.)"""
     if 'decoded' in packet and 'telemetry' in packet['decoded']:
         sender_id = packet['from']
         sender_name = get_node_name(sender_id, interface)
-        
-        # Skip telemetry from "Receiver" node
-        if sender_name == "Receiver":
-            # Still store it for battery info, but don't print
-            telemetry = packet['decoded']['telemetry']
-            if 'deviceMetrics' in telemetry:
-                metrics = telemetry['deviceMetrics']
-                node_telemetry[sender_id] = {
-                    'batteryLevel': metrics.get('batteryLevel'),
-                    'voltage': metrics.get('voltage'),
-                    'channelUtilization': metrics.get('channelUtilization'),
-                    'airUtilTx': metrics.get('airUtilTx'),
-                    'uptimeSeconds': metrics.get('uptimeSeconds'),
-                    'timestamp': datetime.now()
-                }
-            return  # Don't print telemetry for receiver
         
         telemetry = packet['decoded']['telemetry']
         
@@ -104,16 +157,34 @@ def onTelemetry(packet, interface):
             
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            print(f"\n{'='*60}")
-            print(f"📊 TELEMETRY [{timestamp}]")
-            print(f"From: {sender_name}")
-            print(f"Battery: {battery_level}% | Voltage: {voltage}V")
-            print(f"Channel Util: {channel_util}% | Air Util TX: {air_util}%")
-            if uptime != 'N/A':
-                uptime_hours = uptime / 3600
-                print(f"Uptime: {uptime_hours:.1f} hours")
-            print(f"{'='*60}\n")
-            sys.stdout.flush()
+            # Skip printing telemetry from "Receiver" node but still send to cloud
+            if sender_name != "Receiver":
+                print(f"\n{'='*60}")
+                print(f"📊 TELEMETRY [{timestamp}]")
+                print(f"From: {sender_name}")
+                print(f"Battery: {battery_level}% | Voltage: {voltage}V")
+                print(f"Channel Util: {channel_util}% | Air Util TX: {air_util}%")
+                if uptime != 'N/A':
+                    uptime_hours = uptime / 3600
+                    print(f"Uptime: {uptime_hours:.1f} hours")
+                print(f"{'='*60}\n")
+                sys.stdout.flush()
+            
+            # Send to cloud
+            if CLOUD_MODE:
+                send_to_cloud({
+                    'type': 'telemetry',
+                    'data': {
+                        'type': 'telemetry',
+                        'timestamp': timestamp,
+                        'from': sender_name,
+                        'battery': f"{battery_level}%" if battery_level != 'N/A' else None,
+                        'voltage': f"{voltage}V" if voltage != 'N/A' else None,
+                        'channelUtil': str(channel_util) if channel_util != 'N/A' else None,
+                        'airUtil': str(air_util) if air_util != 'N/A' else None,
+                        'uptime': str(uptime / 3600) if uptime != 'N/A' else None
+                    }
+                })
 
 def onReceive(packet, interface):
     """Handle text messages"""
@@ -164,6 +235,24 @@ def onReceive(packet, interface):
         
         print(f"{'='*60}\n")
         sys.stdout.flush()
+        
+        # Send to cloud
+        if CLOUD_MODE:
+            send_to_cloud({
+                'type': 'message',
+                'data': {
+                    'type': 'message',
+                    'timestamp': timestamp,
+                    'from': sender_name,
+                    'message': message,
+                    'location': coords if coords != "N/A" else None,
+                    'altitude': altitude_info if altitude_info != "N/A" else None,
+                    'rssi': str(rssi) if rssi != 'N/A' else None,
+                    'snr': str(snr) if snr != 'N/A' else None,
+                    'battery': battery_info if battery_info != "N/A" else None,
+                    'mapLink': get_google_maps_link(latitude, longitude) if coords != "N/A" else None
+                }
+            })
 
 def onPosition(packet, interface):
     """Handle position updates"""
@@ -206,9 +295,30 @@ def onPosition(packet, interface):
         
         print(f"{'='*60}\n")
         sys.stdout.flush()
+        
+        # Send to cloud
+        if CLOUD_MODE:
+            send_to_cloud({
+                'type': 'position',
+                'data': {
+                    'type': 'position',
+                    'timestamp': timestamp,
+                    'from': sender_name,
+                    'location': coords,
+                    'altitude': altitude_info,
+                    'rssi': str(rssi) if rssi != 'N/A' else None,
+                    'snr': str(snr) if snr != 'N/A' else None,
+                    'battery': battery_info if battery_info != "N/A" else None,
+                    'mapLink': maps_link
+                }
+            })
 
 # Connect
 print("Connecting to Meshtastic device...")
+if CLOUD_MODE:
+    print(f"Cloud mode enabled - will forward to {SERVER_URL}")
+else:
+    print("Local mode - no cloud forwarding")
 sys.stdout.flush()
 
 interface = meshtastic.serial_interface.SerialInterface('/dev/ttyUSB0')
@@ -217,6 +327,11 @@ interface = meshtastic.serial_interface.SerialInterface('/dev/ttyUSB0')
 pub.subscribe(onReceive, "meshtastic.receive.text")
 pub.subscribe(onPosition, "meshtastic.receive.position")
 pub.subscribe(onTelemetry, "meshtastic.receive.telemetry")
+
+# Start cloud sender thread if in cloud mode
+if CLOUD_MODE:
+    sender_thread = Thread(target=cloud_sender_thread, daemon=True)
+    sender_thread.start()
 
 print("Listening for messages, position updates, and telemetry...\n")
 sys.stdout.flush()

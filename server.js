@@ -4,6 +4,7 @@ const socketIo = require('socket.io');
 const { spawn } = require('child_process');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
+const cors = require('cors');
 
 const app = express();
 const server = http.createServer(app);
@@ -11,22 +12,42 @@ const io = socketIo(server, {
     cors: {
         origin: process.env.ALLOWED_ORIGINS || "*",
         methods: ["GET", "POST"]
-    }
+    },
+    transports: ['websocket', 'polling']
 });
 
 const PORT = process.env.PORT || 3000;
 
-// Security middleware
-app.use(helmet({
-    contentSecurityPolicy: false, // Allow WebSocket connections
+// Parse JSON bodies
+app.use(express.json());
+
+// CORS middleware
+app.use(cors({
+    origin: process.env.ALLOWED_ORIGINS || "*",
+    credentials: true
 }));
 
-// Rate limiting
-const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100 // limit each IP to 100 requests per windowMs
+// Security middleware
+app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false
+}));
+
+// Rate limiting for API endpoints
+const apiLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 100, // 100 requests per minute per IP
+    message: 'Too many requests from this IP'
 });
-app.use(limiter);
+
+// General rate limiting
+const generalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 500 // limit each IP to 500 requests per windowMs
+});
+
+app.use('/api/', apiLimiter);
+app.use(generalLimiter);
 
 // Serve static files
 app.use(express.static('public'));
@@ -126,6 +147,8 @@ function parsePythonOutput(data) {
 }
 
 function processPacket(packet) {
+    console.log('Processing packet:', packet.type, 'from', packet.from);
+    
     if (packet.type === 'telemetry' && packet.from) {
         const telemetryData = {
             battery: packet.battery,
@@ -164,6 +187,7 @@ function processPacket(packet) {
             recentMessages.shift();
         }
         io.emit('new-message', packet);
+        console.log(`Broadcast message from ${packet.from}`);
     }
     
     if (packet.location) {
@@ -188,6 +212,7 @@ function processPacket(packet) {
             
             nodePositions.set(packet.from, posData);
             io.emit('position-update', posData);
+            console.log(`Updated position for ${packet.from}: ${lat}, ${lng}`);
         }
     }
 }
@@ -199,12 +224,13 @@ const MAX_CLIENTS = 100;
 io.on('connection', (socket) => {
     // Limit concurrent connections
     if (connectedClients.size >= MAX_CLIENTS) {
+        console.log('Max clients reached, rejecting connection');
         socket.disconnect();
         return;
     }
     
     connectedClients.add(socket.id);
-    console.log(`Client connected (${connectedClients.size} total)`);
+    console.log(`Client connected: ${socket.id} (${connectedClients.size} total)`);
     
     const enrichedMessages = recentMessages.map(msg => {
         if (nodeTelemetry.has(msg.from) && (!msg.battery || msg.battery === 'N/A')) {
@@ -225,15 +251,17 @@ io.on('connection', (socket) => {
         positions: enrichedPositions
     });
     
+    console.log(`Sent initial data: ${enrichedMessages.length} messages, ${enrichedPositions.length} positions`);
+    
     socket.on('disconnect', () => {
         connectedClients.delete(socket.id);
-        console.log(`Client disconnected (${connectedClients.size} total)`);
+        console.log(`Client disconnected: ${socket.id} (${connectedClients.size} total)`);
     });
 });
 
-// Start Python listener only if enabled (not on cloud)
+// Start Python listener only if enabled (for local development)
 let pythonProcess = null;
-if (process.env.ENABLE_PYTHON_LISTENER !== 'false') {
+if (process.env.ENABLE_PYTHON_LISTENER === 'true') {
     console.log('Starting Python listener...');
     pythonProcess = spawn('python3', ['-u', 'meshtastic_listener.py']);
 
@@ -251,7 +279,7 @@ if (process.env.ENABLE_PYTHON_LISTENER !== 'false') {
     });
 } else {
     console.log('Python listener disabled - running in cloud mode');
-    console.log('To receive data, send messages via POST /api/message endpoint');
+    console.log('Waiting for data from remote clients via /api/message endpoint');
 }
 
 // Health check endpoint
@@ -260,18 +288,24 @@ app.get('/health', (req, res) => {
         status: 'ok', 
         uptime: process.uptime(),
         connections: connectedClients.size,
-        pythonListenerEnabled: process.env.ENABLE_PYTHON_LISTENER !== 'false'
+        pythonListenerEnabled: process.env.ENABLE_PYTHON_LISTENER === 'true',
+        messages: recentMessages.length,
+        positions: nodePositions.size,
+        nodes: Array.from(nodePositions.keys())
     });
 });
 
-// API endpoint to receive messages from external sources (like local Python listener)
-app.use(express.json());
+// API endpoint to receive messages from external sources (Raspberry Pi)
 app.post('/api/message', (req, res) => {
+    console.log('Received POST to /api/message');
     const { type, data } = req.body;
     
     if (!type || !data) {
+        console.error('Missing type or data in request');
         return res.status(400).json({ error: 'Missing type or data' });
     }
+    
+    console.log(`Processing ${type} packet from ${data.from}`);
     
     // Process the packet as if it came from Python
     processPacket(data);
@@ -279,10 +313,45 @@ app.post('/api/message', (req, res) => {
     res.json({ success: true, message: 'Data received and broadcast' });
 });
 
+// Batch endpoint for multiple messages at once (more efficient)
+app.post('/api/messages/batch', (req, res) => {
+    console.log('Received batch POST to /api/messages/batch');
+    const { messages } = req.body;
+    
+    if (!Array.isArray(messages)) {
+        return res.status(400).json({ error: 'Messages must be an array' });
+    }
+    
+    let processed = 0;
+    for (const msg of messages) {
+        if (msg.type && msg.data) {
+            processPacket(msg.data);
+            processed++;
+        }
+    }
+    
+    console.log(`Processed ${processed} messages in batch`);
+    res.json({ success: true, processed });
+});
+
+// Debug endpoint to view current state (remove in production)
+app.get('/api/debug', (req, res) => {
+    res.json({
+        messages: recentMessages,
+        positions: Array.from(nodePositions.entries()),
+        telemetry: Array.from(nodeTelemetry.entries()),
+        clients: connectedClients.size
+    });
+});
+
 // Start server
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
-    console.log(`Access from network: http://YOUR_IP:${PORT}`);
+    console.log(`=================================`);
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Mode: ${process.env.ENABLE_PYTHON_LISTENER === 'true' ? 'LOCAL' : 'CLOUD'}`);
+    console.log(`WebSocket endpoint: ws://0.0.0.0:${PORT}`);
+    console.log(`API endpoint: http://0.0.0.0:${PORT}/api/message`);
+    console.log(`=================================`);
 });
 
 // Cleanup
@@ -291,5 +360,8 @@ process.on('SIGINT', () => {
     if (pythonProcess) {
         pythonProcess.kill();
     }
-    process.exit();
+    server.close(() => {
+        console.log('Server closed');
+        process.exit();
+    });
 });
