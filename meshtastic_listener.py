@@ -50,15 +50,21 @@ def get_google_maps_link(latitude, longitude):
     return None
 
 def get_node_name(sender_id, interface):
-    """Get node name from custom mapping or device info"""
-    sender_name = NODE_NAMES.get(sender_id, "Receiver")
-    if sender_name == "Receiver" and sender_id in interface.nodes:
+    """Get node name from custom mapping or device info, fallback to hex ID"""
+    # First check custom mapping
+    if sender_id in NODE_NAMES:
+        return NODE_NAMES[sender_id]
+    
+    # Try to get name from device info
+    if sender_id in interface.nodes:
         node = interface.nodes[sender_id]
         if 'user' in node and 'longName' in node['user']:
-            sender_name = node['user']['longName']
+            return node['user']['longName']
         elif 'user' in node and 'shortName' in node['user']:
-            sender_name = node['user']['shortName']
-    return sender_name
+            return node['user']['shortName']
+    
+    # Fallback to hex ID if not in custom mapping
+    return f"0x{sender_id:08x}"
 
 def get_battery_info(sender_id):
     """Get battery information for a node from cached telemetry"""
@@ -167,8 +173,14 @@ def onTelemetry(packet, interface):
             
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            # Skip printing telemetry from "Receiver" node but still send to cloud
-            if sender_name != "Receiver":
+            # Skip printing telemetry from "Random Node" (nodes not in custom mapping)
+            if sender_name not in NODE_NAMES.values() and not sender_name.startswith("0x"):
+                # This is a node from device info but not in custom mapping
+                pass
+            elif sender_name.startswith("0x"):
+                # This is showing hex ID, skip printing but send to cloud
+                pass
+            else:
                 print(f"\n{'='*60}")
                 print(f"📊 TELEMETRY [{timestamp}]")
                 print(f"From: {sender_name}")
