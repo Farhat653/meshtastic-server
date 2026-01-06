@@ -26,7 +26,12 @@ BATCH_TIMEOUT = 3  # seconds
 # Custom node name mapping
 NODE_NAMES = {
     0x33687054: "Node No Battery",
-    0x336879dc: "Node Battery"
+    0x336879dc: "Node Battery",
+    0x9e7595c4: "Michaelangelo",
+    0x9e755a5c: "Raphael",
+    0x9e76074c: "Master Splinter",
+    0x9e75877c: "Leonardo",
+    0xdb58af14: "Donatelo"
 }
 
 # Store telemetry data for each node
