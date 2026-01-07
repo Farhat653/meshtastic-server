@@ -34,6 +34,14 @@ NODE_NAMES = {
     0xdb58af14: "Donatelo"
 }
 
+# Print the node mapping on startup for verification
+print("\n" + "="*60)
+print("NODE MAPPING LOADED:")
+for node_id, name in NODE_NAMES.items():
+    print(f"  0x{node_id:08x} -> {name}")
+print("="*60 + "\n")
+sys.stdout.flush()
+
 # Store telemetry data for each node
 node_telemetry = {}
 
@@ -52,29 +60,46 @@ def get_google_maps_link(latitude, longitude):
 def get_node_name(sender_id, interface):
     """Get node name from custom mapping or device info, fallback to hex ID"""
     # Debug: print the sender_id to help identify nodes
-    print(f"[DEBUG] Received from node ID: 0x{sender_id:08x} (decimal: {sender_id})")
-    sys.stdout.flush()
+    print(f"\n[DEBUG] ==========================================")
+    print(f"[DEBUG] Received packet from node ID: 0x{sender_id:08x}")
+    print(f"[DEBUG] Decimal value: {sender_id}")
+    print(f"[DEBUG] Checking if {sender_id} is in NODE_NAMES dict...")
+    print(f"[DEBUG] NODE_NAMES keys: {[hex(k) for k in NODE_NAMES.keys()]}")
+    print(f"[DEBUG] Is in dict? {sender_id in NODE_NAMES}")
     
     # First check custom mapping
     if sender_id in NODE_NAMES:
-        return NODE_NAMES[sender_id]
+        name = NODE_NAMES[sender_id]
+        print(f"[DEBUG] ✓ FOUND in custom mapping: {name}")
+        print(f"[DEBUG] ==========================================\n")
+        sys.stdout.flush()
+        return name
+    
+    print(f"[DEBUG] ✗ NOT in custom mapping")
     
     # Try to get name from device info
+    print(f"[DEBUG] Checking interface.nodes...")
+    print(f"[DEBUG] Available nodes in interface: {list(interface.nodes.keys())}")
+    
     if sender_id in interface.nodes:
         node = interface.nodes[sender_id]
+        print(f"[DEBUG] Node data: {node}")
         if 'user' in node and 'longName' in node['user']:
             device_name = node['user']['longName']
-            print(f"[DEBUG] Found device name in interface: {device_name}")
+            print(f"[DEBUG] Found longName in interface: {device_name}")
+            print(f"[DEBUG] ==========================================\n")
             sys.stdout.flush()
             return device_name
         elif 'user' in node and 'shortName' in node['user']:
             device_name = node['user']['shortName']
-            print(f"[DEBUG] Found device short name in interface: {device_name}")
+            print(f"[DEBUG] Found shortName in interface: {device_name}")
+            print(f"[DEBUG] ==========================================\n")
             sys.stdout.flush()
             return device_name
     
     # Fallback to hex ID if not in custom mapping
-    print(f"[DEBUG] Node not in custom mapping, showing as hex ID")
+    print(f"[DEBUG] Not found anywhere, returning hex ID")
+    print(f"[DEBUG] ==========================================\n")
     sys.stdout.flush()
     return f"0x{sender_id:08x}"
 
