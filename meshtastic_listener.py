@@ -51,6 +51,10 @@ def get_google_maps_link(latitude, longitude):
 
 def get_node_name(sender_id, interface):
     """Get node name from custom mapping or device info, fallback to hex ID"""
+    # Debug: print the sender_id to help identify nodes
+    print(f"[DEBUG] Received from node ID: 0x{sender_id:08x} (decimal: {sender_id})")
+    sys.stdout.flush()
+    
     # First check custom mapping
     if sender_id in NODE_NAMES:
         return NODE_NAMES[sender_id]
@@ -59,11 +63,19 @@ def get_node_name(sender_id, interface):
     if sender_id in interface.nodes:
         node = interface.nodes[sender_id]
         if 'user' in node and 'longName' in node['user']:
-            return node['user']['longName']
+            device_name = node['user']['longName']
+            print(f"[DEBUG] Found device name in interface: {device_name}")
+            sys.stdout.flush()
+            return device_name
         elif 'user' in node and 'shortName' in node['user']:
-            return node['user']['shortName']
+            device_name = node['user']['shortName']
+            print(f"[DEBUG] Found device short name in interface: {device_name}")
+            sys.stdout.flush()
+            return device_name
     
     # Fallback to hex ID if not in custom mapping
+    print(f"[DEBUG] Node not in custom mapping, showing as hex ID")
+    sys.stdout.flush()
     return f"0x{sender_id:08x}"
 
 def get_battery_info(sender_id):
