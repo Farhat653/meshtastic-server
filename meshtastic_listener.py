@@ -23,7 +23,7 @@ message_queue = Queue()
 BATCH_SIZE = 5
 BATCH_TIMEOUT = 3  # seconds
 
-# Custom node name mapping
+# Custom node name mapping - THESE TAKE PRIORITY OVER DEVICE NAMES
 NODE_NAMES = {
     0x33687054: "Node No Battery",
     0x336879dc: "Node Battery",
@@ -58,49 +58,20 @@ def get_google_maps_link(latitude, longitude):
     return None
 
 def get_node_name(sender_id, interface):
-    """Get node name from custom mapping or device info, fallback to hex ID"""
-    # Debug: print the sender_id to help identify nodes
-    print(f"\n[DEBUG] ==========================================")
-    print(f"[DEBUG] Received packet from node ID: 0x{sender_id:08x}")
-    print(f"[DEBUG] Decimal value: {sender_id}")
-    print(f"[DEBUG] Checking if {sender_id} is in NODE_NAMES dict...")
-    print(f"[DEBUG] NODE_NAMES keys: {[hex(k) for k in NODE_NAMES.keys()]}")
-    print(f"[DEBUG] Is in dict? {sender_id in NODE_NAMES}")
-    
-    # First check custom mapping
+    """Get node name - CUSTOM MAPPING TAKES PRIORITY"""
+    # ALWAYS check custom mapping FIRST - this is the key fix!
     if sender_id in NODE_NAMES:
-        name = NODE_NAMES[sender_id]
-        print(f"[DEBUG] ✓ FOUND in custom mapping: {name}")
-        print(f"[DEBUG] ==========================================\n")
-        sys.stdout.flush()
-        return name
+        return NODE_NAMES[sender_id]
     
-    print(f"[DEBUG] ✗ NOT in custom mapping")
-    
-    # Try to get name from device info
-    print(f"[DEBUG] Checking interface.nodes...")
-    print(f"[DEBUG] Available nodes in interface: {list(interface.nodes.keys())}")
-    
+    # Only if not in custom mapping, try to get name from device info
     if sender_id in interface.nodes:
         node = interface.nodes[sender_id]
-        print(f"[DEBUG] Node data: {node}")
         if 'user' in node and 'longName' in node['user']:
-            device_name = node['user']['longName']
-            print(f"[DEBUG] Found longName in interface: {device_name}")
-            print(f"[DEBUG] ==========================================\n")
-            sys.stdout.flush()
-            return device_name
+            return node['user']['longName']
         elif 'user' in node and 'shortName' in node['user']:
-            device_name = node['user']['shortName']
-            print(f"[DEBUG] Found shortName in interface: {device_name}")
-            print(f"[DEBUG] ==========================================\n")
-            sys.stdout.flush()
-            return device_name
+            return node['user']['shortName']
     
-    # Fallback to hex ID if not in custom mapping
-    print(f"[DEBUG] Not found anywhere, returning hex ID")
-    print(f"[DEBUG] ==========================================\n")
-    sys.stdout.flush()
+    # Fallback to hex ID if not found anywhere
     return f"0x{sender_id:08x}"
 
 def get_battery_info(sender_id):
@@ -210,14 +181,8 @@ def onTelemetry(packet, interface):
             
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            # Skip printing telemetry from "Random Node" (nodes not in custom mapping)
-            if sender_name not in NODE_NAMES.values() and not sender_name.startswith("0x"):
-                # This is a node from device info but not in custom mapping
-                pass
-            elif sender_name.startswith("0x"):
-                # This is showing hex ID, skip printing but send to cloud
-                pass
-            else:
+            # Only skip printing if it's an unknown node (hex ID format)
+            if not sender_name.startswith("0x"):
                 print(f"\n{'='*60}")
                 print(f"📊 TELEMETRY [{timestamp}]")
                 print(f"From: {sender_name}")
