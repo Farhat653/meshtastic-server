@@ -170,6 +170,11 @@
             grid-template-columns: 1fr 400px;
             grid-template-rows: 60px 1fr;
             height: 100vh;
+            transition: grid-template-columns 0.3s ease;
+        }
+        
+        .container.sidebar-collapsed {
+            grid-template-columns: 1fr 40px;
         }
         
         header {
@@ -327,6 +332,52 @@
             flex-direction: column;
             overflow: hidden;
             transition: background-color 0.3s ease;
+            position: relative;
+        }
+        
+        .sidebar-toggle {
+            position: absolute;
+            left: -20px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 40px;
+            height: 60px;
+            background: #00d4ff;
+            border: none;
+            border-radius: 8px 0 0 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            color: #1a1a2e;
+            z-index: 1000;
+            transition: all 0.3s ease;
+            box-shadow: -2px 0 10px rgba(0, 0, 0, 0.3);
+        }
+        
+        .sidebar-toggle:hover {
+            background: #00a8cc;
+            left: -22px;
+        }
+        
+        body.light-mode .sidebar-toggle {
+            background: #0066cc;
+            color: #ffffff;
+        }
+        
+        body.light-mode .sidebar-toggle:hover {
+            background: #0052a3;
+        }
+        
+        .sidebar.collapsed {
+            width: 0;
+            min-width: 0;
+        }
+        
+        .sidebar.collapsed .tab-container,
+        .sidebar.collapsed .tab-content {
+            display: none;
         }
         
         .tab-container {
@@ -545,6 +596,7 @@
         <div id="map"></div>
         
         <div class="sidebar">
+            <button class="sidebar-toggle" id="sidebarToggle">◀</button>
             <div class="tab-container">
                 <button class="tab active" data-tab="messages">Messages</button>
                 <button class="tab" data-tab="locations">Location Logs</button>
@@ -558,6 +610,37 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
     <script>
         const socket = io();
+        
+        // Sidebar toggle functionality
+        const sidebar = document.querySelector('.sidebar');
+        const sidebarToggle = document.getElementById('sidebarToggle');
+        const container = document.querySelector('.container');
+        
+        // Load saved sidebar state from localStorage
+        const sidebarCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
+        if (sidebarCollapsed) {
+            sidebar.classList.add('collapsed');
+            container.classList.add('sidebar-collapsed');
+            sidebarToggle.textContent = '▶';
+        }
+        
+        sidebarToggle.addEventListener('click', () => {
+            sidebar.classList.toggle('collapsed');
+            container.classList.toggle('sidebar-collapsed');
+            
+            if (sidebar.classList.contains('collapsed')) {
+                sidebarToggle.textContent = '▶';
+                localStorage.setItem('sidebarCollapsed', 'true');
+            } else {
+                sidebarToggle.textContent = '◀';
+                localStorage.setItem('sidebarCollapsed', 'false');
+            }
+            
+            // Invalidate map size after animation completes
+            setTimeout(() => {
+                map.invalidateSize();
+            }, 300);
+        });
         
         // Theme toggle functionality
         const themeToggle = document.getElementById('themeToggle');
@@ -821,57 +904,4 @@
             }
         }
         
-        socket.on('initial-data', (data) => {
-            data.messages.forEach(msg => addMessage(msg));
-            data.positions.forEach(pos => updatePosition(pos));
-            
-            if (markers.size > 0) {
-                const bounds = L.latLngBounds(Array.from(markers.values()).map(m => m.getLatLng()));
-                map.fitBounds(bounds, { padding: [50, 50] });
-            }
-        });
-        
-        socket.on('new-message', (msg) => {
-            addMessage(msg);
-        });
-        
-        socket.on('position-update', (pos) => {
-            updatePosition(pos);
-        });
-        
-        socket.on('disconnect', () => {
-            document.querySelector('.status-dot').style.background = '#ff0000';
-            document.querySelector('.status span').textContent = 'Disconnected';
-        });
-        
-        socket.on('connect', () => {
-            document.querySelector('.status-dot').style.background = '#00ff00';
-            document.querySelector('.status span').textContent = 'Connected';
-        });
-        
-        socket.on('telemetry-update', (data) => {
-            if (data.from && data.battery) {
-                if (onlineNodes.has(data.from)) {
-                    const nodeData = onlineNodes.get(data.from);
-                    nodeData.battery = data.battery;
-                    onlineNodes.set(data.from, nodeData);
-                    updateNodeList();
-                } else {
-                    onlineNodes.set(data.from, {
-                        lastSeen: new Date(data.timestamp),
-                        battery: data.battery
-                    });
-                    updateNodeList();
-                }
-                
-                if (markers.has(data.from)) {
-                    const marker = markers.get(data.from);
-                    const currentPopup = marker.getPopupContent();
-                    const updatedPopup = currentPopup.replace(/🔋 Battery: [^<]+/, `🔋 Battery: ${data.battery}`);
-                    marker.setPopupContent(updatedPopup);
-                }
-            }
-        });
-    </script>
-</body>
-</html>
+        socket.on
