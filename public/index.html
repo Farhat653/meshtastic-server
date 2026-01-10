@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Meshtastic Monitor</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
     <style>
@@ -39,6 +39,10 @@
         
         body.dark-mode .sidebar {
             background: #16213e;
+        }
+        
+        body.dark-mode .sidebar-header {
+            background: #0f3460;
         }
         
         body.dark-mode .message-card,
@@ -93,6 +97,11 @@
         
         body.light-mode .sidebar {
             background: #ffffff;
+        }
+        
+        body.light-mode .sidebar-header {
+            background: #e8f4f8;
+            color: #333;
         }
         
         body.light-mode .message-card,
@@ -156,11 +165,10 @@
             background: rgba(0, 102, 204, 0.05);
         }
         
-        /* Desktop layout */
         .container {
             display: grid;
             grid-template-columns: 1fr 400px;
-            grid-template-rows: auto 1fr;
+            grid-template-rows: 60px 1fr;
             height: 100vh;
         }
         
@@ -172,8 +180,6 @@
             justify-content: space-between;
             box-shadow: 0 2px 10px rgba(0,0,0,0.3);
             transition: background-color 0.3s ease;
-            flex-wrap: wrap;
-            gap: 10px;
         }
         
         header h1 {
@@ -194,8 +200,7 @@
         .header-right {
             display: flex;
             align-items: center;
-            gap: 15px;
-            flex-wrap: wrap;
+            gap: 20px;
         }
         
         .theme-toggle {
@@ -210,7 +215,6 @@
             align-items: center;
             gap: 8px;
             transition: all 0.3s ease;
-            white-space: nowrap;
         }
         
         .theme-toggle:hover {
@@ -242,7 +246,6 @@
             font-weight: bold;
             color: #00d4ff;
             transition: color 0.3s ease;
-            white-space: nowrap;
         }
         
         .node-list {
@@ -312,10 +315,9 @@
         #map {
             width: 100%;
             height: 100%;
-            touch-action: pan-x pan-y;
         }
         
-        /* Dark mode map styling */
+        /* Dark mode map styling - vibrant with bright roads */
         body.dark-mode .map-tiles {
             filter: brightness(0.6) invert(1) contrast(3.5) hue-rotate(200deg) saturate(1.5) brightness(0.85);
         }
@@ -358,7 +360,6 @@
             flex: 1;
             overflow-y: auto;
             padding: 15px;
-            -webkit-overflow-scrolling: touch;
         }
         
         .tab-content.active {
@@ -404,7 +405,6 @@
             margin: 8px 0;
             font-size: 14px;
             line-height: 1.4;
-            word-wrap: break-word;
         }
         
         .message-meta {
@@ -454,7 +454,6 @@
         .location-coords {
             font-size: 13px;
             margin: 4px 0;
-            word-wrap: break-word;
         }
         
         .location-meta {
@@ -516,174 +515,6 @@
         ::-webkit-scrollbar-thumb:hover {
             background: #00a8cc;
         }
-        
-        /* Mobile-specific styles */
-        @media (max-width: 768px) {
-            .container {
-                grid-template-columns: 1fr;
-                grid-template-rows: auto 50vh 1fr;
-            }
-            
-            header {
-                padding: 10px 15px;
-            }
-            
-            header h1 {
-                font-size: 18px;
-                width: 100%;
-            }
-            
-            .logo {
-                width: 30px;
-                height: 30px;
-            }
-            
-            .header-right {
-                width: 100%;
-                justify-content: space-between;
-                gap: 10px;
-            }
-            
-            .theme-toggle {
-                padding: 6px 12px;
-                font-size: 12px;
-            }
-            
-            .theme-text {
-                display: none;
-            }
-            
-            .nodes-status {
-                flex-direction: column;
-                align-items: flex-start;
-                padding: 6px 12px;
-                gap: 8px;
-                flex: 1;
-            }
-            
-            .node-count {
-                font-size: 14px;
-            }
-            
-            .node-list {
-                gap: 6px;
-            }
-            
-            .node-badge {
-                padding: 3px 8px;
-                font-size: 10px;
-            }
-            
-            .node-battery {
-                font-size: 9px;
-            }
-            
-            .status {
-                font-size: 12px;
-            }
-            
-            .sidebar {
-                grid-row: 3;
-            }
-            
-            .tab {
-                padding: 12px 10px;
-                font-size: 14px;
-            }
-            
-            .tab-content {
-                padding: 10px;
-            }
-            
-            .message-card,
-            .location-entry {
-                padding: 10px;
-                margin-bottom: 10px;
-            }
-            
-            .message-header,
-            .location-header {
-                font-size: 11px;
-                flex-wrap: wrap;
-            }
-            
-            .message-text {
-                font-size: 13px;
-            }
-            
-            .message-meta {
-                grid-template-columns: 1fr;
-                font-size: 10px;
-            }
-            
-            .location-coords {
-                font-size: 12px;
-            }
-            
-            .location-meta {
-                gap: 8px;
-                font-size: 10px;
-            }
-            
-            /* Larger tap targets for mobile */
-            .node-badge {
-                min-height: 32px;
-            }
-            
-            .tab {
-                min-height: 44px;
-            }
-            
-            /* Make map more usable on mobile */
-            #map {
-                min-height: 300px;
-            }
-            
-            .leaflet-popup-content-wrapper {
-                max-width: 250px;
-            }
-        }
-        
-        /* Very small mobile devices */
-        @media (max-width: 480px) {
-            header h1 {
-                font-size: 16px;
-            }
-            
-            header h1 span {
-                display: none;
-            }
-            
-            header h1::after {
-                content: "Meshtastic";
-            }
-            
-            .node-list {
-                max-width: 100%;
-                overflow-x: auto;
-                flex-wrap: nowrap;
-                padding-bottom: 5px;
-            }
-            
-            .message-meta {
-                gap: 4px;
-            }
-        }
-        
-        /* Tablet landscape */
-        @media (min-width: 769px) and (max-width: 1024px) {
-            .container {
-                grid-template-columns: 1fr 350px;
-            }
-            
-            header {
-                padding: 12px 20px;
-            }
-            
-            header h1 {
-                font-size: 20px;
-            }
-        }
     </style>
 </head>
 <body class="dark-mode">
@@ -696,7 +527,7 @@
             <div class="header-right">
                 <button class="theme-toggle" id="themeToggle">
                     <span id="themeIcon">☀️</span>
-                    <span id="themeText" class="theme-text">Light Mode</span>
+                    <span id="themeText">Light Mode</span>
                 </button>
                 <div class="nodes-status">
                     <div class="node-count">
@@ -716,7 +547,7 @@
         <div class="sidebar">
             <div class="tab-container">
                 <button class="tab active" data-tab="messages">Messages</button>
-                <button class="tab" data-tab="locations">Locations</button>
+                <button class="tab" data-tab="locations">Location Logs</button>
             </div>
             <div class="tab-content active" id="messages-tab"></div>
             <div class="tab-content" id="locations-tab"></div>
@@ -906,6 +737,7 @@
         function addLocationLog(pos) {
             locationHistory.unshift(pos);
             
+            // Keep only last 100 location entries
             if (locationHistory.length > 100) {
                 locationHistory.pop();
             }
@@ -931,6 +763,7 @@
                 </div>
             `;
             
+            // Click to zoom to location on map
             locationEl.addEventListener('click', () => {
                 map.setView([pos.lat, pos.lng], 16);
                 if (markers.has(pos.from)) {
@@ -940,6 +773,7 @@
             
             locationsContainer.insertBefore(locationEl, locationsContainer.firstChild);
             
+            // Keep only 100 displayed entries
             while (locationsContainer.children.length > 100) {
                 locationsContainer.removeChild(locationsContainer.lastChild);
             }
@@ -954,6 +788,7 @@
                 updateNodeList();
             }
             
+            // Add to location log
             addLocationLog(pos);
             
             const nodeColor = getNodeColor(pos.from);
@@ -963,4 +798,80 @@
                 <div class="popup-info">
                     <div>📍 ${pos.lat.toFixed(6)}, ${pos.lng.toFixed(6)}</div>
                     ${pos.altitude ? `<div>⛰️ Altitude: ${pos.altitude}</div>` : ''}
-                    ${pos.battery && pos.battery !== 'N/A' ? `<div>
+                    ${pos.battery && pos.battery !== 'N/A' ? `<div>🔋 Battery: ${pos.battery}</div>` : ''}
+                    ${pos.rssi && pos.rssi !== 'N/A' ? `<div>📡 RSSI: ${pos.rssi} dBm</div>` : ''}
+                    ${pos.snr && pos.snr !== 'N/A' ? `<div>📶 SNR: ${pos.snr} dB</div>` : ''}
+                    <div>🕐 ${new Date(pos.timestamp).toLocaleString()}</div>
+                </div>
+            `;
+            
+            if (markers.has(pos.from)) {
+                const marker = markers.get(pos.from);
+                marker.setLatLng([pos.lat, pos.lng]);
+                marker.setPopupContent(popupContent);
+            } else {
+                const marker = L.marker([pos.lat, pos.lng], { icon: createNodeIcon(pos.from) })
+                    .addTo(map)
+                    .bindPopup(popupContent);
+                markers.set(pos.from, marker);
+            }
+            
+            if (markers.size === 1) {
+                map.setView([pos.lat, pos.lng], 13);
+            }
+        }
+        
+        socket.on('initial-data', (data) => {
+            data.messages.forEach(msg => addMessage(msg));
+            data.positions.forEach(pos => updatePosition(pos));
+            
+            if (markers.size > 0) {
+                const bounds = L.latLngBounds(Array.from(markers.values()).map(m => m.getLatLng()));
+                map.fitBounds(bounds, { padding: [50, 50] });
+            }
+        });
+        
+        socket.on('new-message', (msg) => {
+            addMessage(msg);
+        });
+        
+        socket.on('position-update', (pos) => {
+            updatePosition(pos);
+        });
+        
+        socket.on('disconnect', () => {
+            document.querySelector('.status-dot').style.background = '#ff0000';
+            document.querySelector('.status span').textContent = 'Disconnected';
+        });
+        
+        socket.on('connect', () => {
+            document.querySelector('.status-dot').style.background = '#00ff00';
+            document.querySelector('.status span').textContent = 'Connected';
+        });
+        
+        socket.on('telemetry-update', (data) => {
+            if (data.from && data.battery) {
+                if (onlineNodes.has(data.from)) {
+                    const nodeData = onlineNodes.get(data.from);
+                    nodeData.battery = data.battery;
+                    onlineNodes.set(data.from, nodeData);
+                    updateNodeList();
+                } else {
+                    onlineNodes.set(data.from, {
+                        lastSeen: new Date(data.timestamp),
+                        battery: data.battery
+                    });
+                    updateNodeList();
+                }
+                
+                if (markers.has(data.from)) {
+                    const marker = markers.get(data.from);
+                    const currentPopup = marker.getPopupContent();
+                    const updatedPopup = currentPopup.replace(/🔋 Battery: [^<]+/, `🔋 Battery: ${data.battery}`);
+                    marker.setPopupContent(updatedPopup);
+                }
+            }
+        });
+    </script>
+</body>
+</html>
