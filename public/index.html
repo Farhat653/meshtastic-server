@@ -234,15 +234,15 @@
         
         .nodes-status {
             display: flex;
-            align-items: center;
+            flex-direction: column;
             gap: 12px;
-            padding: 8px 16px;
+            padding: 12px;
             border-radius: 8px;
             transition: background-color 0.3s ease;
         }
         
         .node-count {
-            font-size: 18px;
+            font-size: 16px;
             font-weight: bold;
             color: #00d4ff;
             transition: color 0.3s ease;
@@ -529,12 +529,6 @@
                     <span id="themeIcon">☀️</span>
                     <span id="themeText">Light Mode</span>
                 </button>
-                <div class="nodes-status">
-                    <div class="node-count">
-                        <span id="nodeCount">0</span> Nodes
-                    </div>
-                    <div class="node-list" id="nodeList"></div>
-                </div>
                 <div class="status">
                     <div class="status-dot"></div>
                     <span>Connected</span>
@@ -547,10 +541,17 @@
         <div class="sidebar">
             <div class="tab-container">
                 <button class="tab active" data-tab="messages">Messages</button>
-                <button class="tab" data-tab="locations">Location Logs</button>
+                <button class="tab" data-tab="dashboard">Dashboard</button>
             </div>
-            <div class="tab-content active" id="messages-tab"></div>
-            <div class="tab-content" id="locations-tab"></div>
+            <div class="tab-content active" id="messages-tab">
+                <div class="nodes-status">
+                    <div class="node-count">
+                        <span id="nodeCount">0</span> Nodes Online
+                    </div>
+                    <div class="node-list" id="nodeList"></div>
+                </div>
+            </div>
+            <div class="tab-content" id="dashboard-tab"></div>
         </div>
     </div>
     
@@ -605,7 +606,7 @@
         
         const markers = new Map();
         const messagesContainer = document.getElementById('messages-tab');
-        const locationsContainer = document.getElementById('locations-tab');
+        const dashboardContainer = document.getElementById('dashboard-tab');
         const nodeListContainer = document.getElementById('nodeList');
         const nodeCountElement = document.getElementById('nodeCount');
         const onlineNodes = new Map();
@@ -727,10 +728,27 @@
                 </div>
             `;
             
-            messagesContainer.insertBefore(messageEl, messagesContainer.firstChild);
+            // Add to Messages tab (after nodes-status div)
+            const nodesStatus = messagesContainer.querySelector('.nodes-status');
+            if (nodesStatus && nodesStatus.nextSibling) {
+                messagesContainer.insertBefore(messageEl, nodesStatus.nextSibling);
+            } else {
+                messagesContainer.appendChild(messageEl);
+            }
             
-            while (messagesContainer.children.length > 50) {
-                messagesContainer.removeChild(messagesContainer.lastChild);
+            // Also add to Dashboard tab
+            const dashboardMessageEl = messageEl.cloneNode(true);
+            dashboardContainer.insertBefore(dashboardMessageEl, dashboardContainer.firstChild);
+            
+            // Keep only 50 messages in each tab
+            const messageCards = messagesContainer.querySelectorAll('.message-card');
+            if (messageCards.length > 50) {
+                messageCards[messageCards.length - 1].remove();
+            }
+            
+            const dashboardMessages = dashboardContainer.querySelectorAll('.message-card');
+            if (dashboardMessages.length > 50) {
+                dashboardMessages[dashboardMessages.length - 1].remove();
             }
         }
         
@@ -771,11 +789,11 @@
                 }
             });
             
-            locationsContainer.insertBefore(locationEl, locationsContainer.firstChild);
+            dashboardContainer.insertBefore(locationEl, dashboardContainer.firstChild);
             
-            // Keep only 100 displayed entries
-            while (locationsContainer.children.length > 100) {
-                locationsContainer.removeChild(locationsContainer.lastChild);
+            // Keep only 100 displayed entries (messages + locations combined)
+            while (dashboardContainer.children.length > 100) {
+                dashboardContainer.removeChild(dashboardContainer.lastChild);
             }
         }
         
@@ -868,10 +886,4 @@
                     const marker = markers.get(data.from);
                     const currentPopup = marker.getPopupContent();
                     const updatedPopup = currentPopup.replace(/🔋 Battery: [^<]+/, `🔋 Battery: ${data.battery}`);
-                    marker.setPopupContent(updatedPopup);
-                }
-            }
-        });
-    </script>
-</body>
-</html>
+                    marker.setPop
