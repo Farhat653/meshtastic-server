@@ -29,8 +29,8 @@ NODE_CHECK_INTERVAL = 60  # Check for new nodes every 60 seconds
 
 # Custom node name mapping - THESE TAKE PRIORITY OVER DEVICE NAMES
 NODE_NAMES = {
-    0x33687054: "Node No Battery",
-    0x336879dc: "Node Battery",
+    0x33687054: "Lebron Daddy",
+    0x336879dc: "Steph Curry",
     0x9e7595c4: "Michaelangelo",
     0x9e755a5c: "Raphael",
     0x9e76074c: "Master Splinter",
