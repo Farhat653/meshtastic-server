@@ -244,6 +244,7 @@
             display: flex;
             gap: 8px;
             flex-wrap: wrap;
+            align-items: center;
         }
         
         .node-badge {
@@ -261,6 +262,41 @@
         .node-badge:hover {
             opacity: 0.8;
             transform: scale(1.05);
+        }
+        
+        .node-badge.hidden {
+            display: none;
+        }
+        
+        .node-badge.visible {
+            display: flex;
+        }
+        
+        .more-nodes {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            background: transparent;
+            border: 1px solid #00d4ff;
+            color: #00d4ff;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: bold;
+        }
+        
+        .more-nodes:hover {
+            background: #00d4ff;
+            color: #1a1a2e;
+        }
+        
+        body.light-mode .more-nodes {
+            border-color: #0066cc;
+            color: #0066cc;
+        }
+        
+        body.light-mode .more-nodes:hover {
+            background: #0066cc;
+            color: #ffffff;
         }
         
         .node-battery {
@@ -344,10 +380,36 @@
             border-bottom: 1px solid #00d4ff;
             text-transform: uppercase;
             letter-spacing: 1px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
         }
         
         .section-title:first-child {
             margin-top: 0;
+        }
+        
+        .section-toggle {
+            font-size: 12px;
+            transition: transform 0.3s ease;
+        }
+        
+        .section-toggle.collapsed {
+            transform: rotate(-90deg);
+        }
+        
+        .section-content {
+            max-height: 10000px;
+            overflow: hidden;
+            transition: max-height 0.3s ease, opacity 0.3s ease;
+            opacity: 1;
+        }
+        
+        .section-content.collapsed {
+            max-height: 0;
+            opacity: 0;
         }
         
         .message-card {
@@ -531,10 +593,20 @@
         <div class="sidebar">
             <div class="sidebar-header">Activity Feed</div>
             <div class="combined-content">
-                <div class="section-title">📍 Location Logs</div>
-                <div id="locations-section"></div>
-                <div class="section-title">💬 Messages</div>
-                <div id="messages-section"></div>
+                <div class="section-title" id="locationTitle">
+                    <span>📍 Location Logs</span>
+                    <span class="section-toggle">▼</span>
+                </div>
+                <div class="section-content" id="locationContent">
+                    <div id="locations-section"></div>
+                </div>
+                <div class="section-title" id="messageTitle">
+                    <span>💬 Messages</span>
+                    <span class="section-toggle">▼</span>
+                </div>
+                <div class="section-content" id="messageContent">
+                    <div id="messages-section"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -596,6 +668,27 @@
         const onlineNodes = new Map();
         const locationHistory = [];
         
+        const MAX_VISIBLE_NODES = 4;
+        let showAllNodes = false;
+        
+        // Section toggle functionality
+        const locationTitle = document.getElementById('locationTitle');
+        const locationContent = document.getElementById('locationContent');
+        const messageTitle = document.getElementById('messageTitle');
+        const messageContent = document.getElementById('messageContent');
+        
+        locationTitle.addEventListener('click', () => {
+            const toggle = locationTitle.querySelector('.section-toggle');
+            locationContent.classList.toggle('collapsed');
+            toggle.classList.toggle('collapsed');
+        });
+        
+        messageTitle.addEventListener('click', () => {
+            const toggle = messageTitle.querySelector('.section-toggle');
+            messageContent.classList.toggle('collapsed');
+            toggle.classList.toggle('collapsed');
+        });
+        
         const nodeColors = [
             '#00d4ff', '#ff6b6b', '#4ecdc4', '#ffd93d', '#a8e6cf',
             '#ff8b94', '#c7ceea', '#ffa07a', '#98d8c8', '#f7b731',
@@ -617,11 +710,22 @@
             nodeCountElement.textContent = onlineNodes.size;
             nodeListContainer.innerHTML = '';
             
-            onlineNodes.forEach((nodeData, nodeName) => {
+            const nodeArray = Array.from(onlineNodes.entries());
+            const visibleCount = showAllNodes ? nodeArray.length : Math.min(MAX_VISIBLE_NODES, nodeArray.length);
+            const hasMoreNodes = nodeArray.length > MAX_VISIBLE_NODES;
+            
+            nodeArray.forEach(([nodeName, nodeData], index) => {
                 const badge = document.createElement('div');
                 badge.className = 'node-badge';
                 const nodeColor = getNodeColor(nodeName);
                 badge.style.borderColor = nodeColor;
+                
+                // Show first MAX_VISIBLE_NODES or all if expanded
+                if (index >= visibleCount) {
+                    badge.classList.add('hidden');
+                } else {
+                    badge.classList.add('visible');
+                }
                 
                 let batteryClass = '';
                 let batteryText = '';
@@ -653,6 +757,28 @@
                 
                 nodeListContainer.appendChild(badge);
             });
+            
+            // Add "..." button if there are more nodes
+            if (hasMoreNodes && !showAllNodes) {
+                const moreButton = document.createElement('button');
+                moreButton.className = 'more-nodes';
+                moreButton.textContent = '...';
+                moreButton.addEventListener('click', () => {
+                    showAllNodes = true;
+                    updateNodeList();
+                });
+                nodeListContainer.appendChild(moreButton);
+            } else if (hasMoreNodes && showAllNodes) {
+                const lessButton = document.createElement('button');
+                lessButton.className = 'more-nodes';
+                lessButton.textContent = '−';
+                lessButton.title = 'Show less';
+                lessButton.addEventListener('click', () => {
+                    showAllNodes = false;
+                    updateNodeList();
+                });
+                nodeListContainer.appendChild(lessButton);
+            }
         }
         
         function createNodeIcon(nodeName) {
