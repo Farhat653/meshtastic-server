@@ -32,7 +32,7 @@ NODE_NAMES = {
     0x33687054: "Lebron Daddy",
     0x336879dc: "Steph Curry",
     0x9e7595c4: "Michaelangelo",
-    0x9e755a5c: "Raphael",
+    0x9e755a5c: "Node 1",
     0x9e76074c: "Master Splinter",
     0x9e75877c: "Leonardo",
     0xdb58af14: "Donatelo"
