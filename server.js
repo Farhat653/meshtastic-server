@@ -1,423 +1,539 @@
-#!/usr/bin/env python3
-import meshtastic
-import meshtastic.serial_interface
-from pubsub import pub
-from datetime import datetime
-import time
-import sys
-import os
-import requests
-from threading import Thread
-from queue import Queue
+const express = require('express');
+const http = require('http');
+const socketIo = require('socket.io');
+const { spawn } = require('child_process');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 
-# Force unbuffered output so Node.js can read it in real-time
-sys.stdout.reconfigure(line_buffering=True)
-sys.stderr.reconfigure(line_buffering=True)
+const app = express();
+const server = http.createServer(app);
+const io = socketIo(server, {
+    cors: {
+        origin: process.env.ALLOWED_ORIGINS || "*",
+        methods: ["GET", "POST"]
+    }
+});
 
-# Cloud server configuration
-SERVER_URL = os.getenv('SERVER_URL', None)
-CLOUD_MODE = SERVER_URL is not None
+const PORT = process.env.PORT || 3000;
 
-# Message queue for batch sending
-message_queue = Queue()
-BATCH_SIZE = 5
-BATCH_TIMEOUT = 3  # seconds
+// Security middleware
+app.use(helmet({
+    contentSecurityPolicy: false, // Allow WebSocket connections
+}));
 
-# Telemetry and node discovery settings
-TELEMETRY_INTERVAL = 30  # Request telemetry every 30 seconds
-NODE_CHECK_INTERVAL = 60  # Check for new nodes every 60 seconds
+// Rate limiting
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100 // limit each IP to 100 requests per windowMs
+});
+app.use(limiter);
 
-# Custom node name mapping - THESE TAKE PRIORITY OVER DEVICE NAMES
-NODE_NAMES = {
-    0x33687054: "Lebron Daddy",
-    0x336879dc: "Steph Curry",
-    0x9e7595c4: "Michaelangelo",
-    0x9e755a5c: "Node 1",
-    0x9e76074c: "Master Splinter",
-    0x9e75877c: "Leonardo",
-    0xdb58af14: "Donatelo"
-}
+// Serve static files
+app.use(express.static('public'));
 
-# Print the node mapping on startup for verification
-print("\n" + "="*60)
-print("NODE MAPPING LOADED:")
-for node_id, name in NODE_NAMES.items():
-    print(f"  0x{node_id:08x} -> {name}")
-print("="*60 + "\n")
-sys.stdout.flush()
+// Store recent messages and positions
+const recentMessages = [];
+const nodePositions = new Map();
+const nodeTelemetry = new Map();
+const MAX_MESSAGES = 50;
 
-# Store telemetry data for each node
-node_telemetry = {}
-
-def format_coordinates(latitude, longitude):
-    """Format coordinates for Google Maps"""
-    if latitude and longitude:
-        return f"{latitude:.6f}, {longitude:.6f}"
-    return "N/A"
-
-def get_google_maps_link(latitude, longitude):
-    """Generate Google Maps link"""
-    if latitude and longitude:
-        return f"https://maps.google.com/?q={latitude},{longitude}"
-    return None
-
-def get_node_name(sender_id, interface):
-    """Get node name - CUSTOM MAPPING TAKES PRIORITY"""
-    # ALWAYS check custom mapping FIRST - this is the key fix!
-    if sender_id in NODE_NAMES:
-        return NODE_NAMES[sender_id]
+// Parse Python script output
+function parsePythonOutput(data) {
+    const lines = data.toString().split('\n');
+    let currentPacket = null;
     
-    # Only if not in custom mapping, try to get name from device info
-    if sender_id in interface.nodes:
-        node = interface.nodes[sender_id]
-        if 'user' in node and 'longName' in node['user']:
-            return node['user']['longName']
-        elif 'user' in node and 'shortName' in node['user']:
-            return node['user']['shortName']
-    
-    # Fallback to hex ID if not found anywhere
-    return f"0x{sender_id:08x}"
-
-def get_battery_info(sender_id):
-    """Get battery information for a node from cached telemetry"""
-    if sender_id in node_telemetry:
-        telemetry = node_telemetry[sender_id]
-        voltage = telemetry.get('voltage')
-        battery_level = telemetry.get('batteryLevel')
+    for (let line of lines) {
+        line = line.trim();
         
-        if voltage and battery_level is not None:
-            return f"{voltage:.2f}V ({battery_level}%)"
-        elif voltage:
-            return f"{voltage:.2f}V"
-        elif battery_level is not None:
-            return f"{battery_level}%"
-    
-    return "N/A"
-
-def send_to_cloud(packet_data):
-    """Send packet data to cloud server queue"""
-    if not CLOUD_MODE:
-        return
-    
-    try:
-        message_queue.put(packet_data)
-    except Exception as e:
-        print(f"Error queuing message: {e}")
-        sys.stdout.flush()
-
-def cloud_sender_thread():
-    """Background thread to send messages to cloud in batches"""
-    if not CLOUD_MODE:
-        return
-    
-    batch = []
-    last_send_time = time.time()
-    
-    print(f"☁️  Cloud sender started - forwarding to {SERVER_URL}")
-    sys.stdout.flush()
-    
-    while True:
-        try:
-            # Try to get a message with timeout
-            try:
-                msg = message_queue.get(timeout=1)
-                batch.append(msg)
-            except:
-                pass
-            
-            current_time = time.time()
-            should_send = (
-                len(batch) >= BATCH_SIZE or 
-                (len(batch) > 0 and (current_time - last_send_time) >= BATCH_TIMEOUT)
-            )
-            
-            if should_send and batch:
-                try:
-                    response = requests.post(
-                        f"{SERVER_URL}/api/messages/batch",
-                        json={'messages': batch},
-                        timeout=10
-                    )
-                    if response.status_code == 200:
-                        print(f"☁️  ✓ Sent {len(batch)} messages to cloud")
-                    else:
-                        print(f"☁️  ✗ Cloud returned {response.status_code}")
-                    sys.stdout.flush()
-                except requests.exceptions.RequestException as e:
-                    print(f"☁️  ✗ Failed to send to cloud: {e}")
-                    sys.stdout.flush()
-                
-                batch.clear()
-                last_send_time = current_time
-                
-        except Exception as e:
-            print(f"Cloud sender error: {e}")
-            sys.stdout.flush()
-            time.sleep(1)
-
-def onTelemetry(packet, interface):
-    """Handle telemetry updates (battery, voltage, etc.)"""
-    if 'decoded' in packet and 'telemetry' in packet['decoded']:
-        sender_id = packet['from']
-        sender_name = get_node_name(sender_id, interface)
-        
-        telemetry = packet['decoded']['telemetry']
-        
-        # Check for device metrics (battery, voltage, etc.)
-        if 'deviceMetrics' in telemetry:
-            metrics = telemetry['deviceMetrics']
-            
-            # Store telemetry data for this node
-            node_telemetry[sender_id] = {
-                'batteryLevel': metrics.get('batteryLevel'),
-                'voltage': metrics.get('voltage'),
-                'channelUtilization': metrics.get('channelUtilization'),
-                'airUtilTx': metrics.get('airUtilTx'),
-                'uptimeSeconds': metrics.get('uptimeSeconds'),
-                'timestamp': datetime.now()
+        if (line.includes('📨 MESSAGE') || line.includes('📍 POSITION UPDATE') || line.includes('📊 TELEMETRY')) {
+            if (currentPacket) {
+                processPacket(currentPacket);
             }
             
-            battery_level = metrics.get('batteryLevel', 'N/A')
-            voltage = metrics.get('voltage', 'N/A')
-            channel_util = metrics.get('channelUtilization', 'N/A')
-            air_util = metrics.get('airUtilTx', 'N/A')
-            uptime = metrics.get('uptimeSeconds', 'N/A')
+            const timestamp = line.match(/\[(.*?)\]/)?.[1];
+            let packetType = 'unknown';
+            if (line.includes('📨 MESSAGE')) packetType = 'message';
+            else if (line.includes('📍 POSITION UPDATE')) packetType = 'position';
+            else if (line.includes('📊 TELEMETRY')) packetType = 'telemetry';
             
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Only skip printing if it's an unknown node (hex ID format)
-            if not sender_name.startswith("0x"):
-                print(f"\n{'='*60}")
-                print(f"📊 TELEMETRY [{timestamp}]")
-                print(f"From: {sender_name}")
-                print(f"Battery: {battery_level}% | Voltage: {voltage}V")
-                print(f"Channel Util: {channel_util}% | Air Util TX: {air_util}%")
-                if uptime != 'N/A':
-                    uptime_hours = uptime / 3600
-                    print(f"Uptime: {uptime_hours:.1f} hours")
-                print(f"{'='*60}\n")
-                sys.stdout.flush()
-            
-            # Send to cloud
-            if CLOUD_MODE:
-                send_to_cloud({
-                    'type': 'telemetry',
-                    'data': {
-                        'type': 'telemetry',
-                        'timestamp': timestamp,
-                        'from': sender_name,
-                        'battery': f"{battery_level}%" if battery_level != 'N/A' else None,
-                        'voltage': f"{voltage}V" if voltage != 'N/A' else None,
-                        'channelUtil': str(channel_util) if channel_util != 'N/A' else None,
-                        'airUtil': str(air_util) if air_util != 'N/A' else None,
-                        'uptime': str(uptime / 3600) if uptime != 'N/A' else None
-                    }
-                })
-
-def onReceive(packet, interface):
-    """Handle text messages"""
-    if 'decoded' in packet and 'text' in packet['decoded']:
-        sender_id = packet['from']
-        message = packet['decoded']['text']
-        rssi = packet.get('rxRssi', 'N/A')
-        snr = packet.get('rxSnr', 'N/A')
-        
-        # Get timestamp
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if 'rxTime' in packet:
-            timestamp = datetime.fromtimestamp(packet['rxTime']).strftime("%Y-%m-%d %H:%M:%S")
-        
-        sender_name = get_node_name(sender_id, interface)
-        battery_info = get_battery_info(sender_id)
-        
-        # Get GPS position
-        latitude = None
-        longitude = None
-        altitude = None
-        
-        if sender_id in interface.nodes:
-            node = interface.nodes[sender_id]
-            if 'position' in node:
-                pos = node['position']
-                if 'latitude' in pos and 'longitude' in pos:
-                    latitude = pos['latitude']
-                    longitude = pos['longitude']
-                if 'altitude' in pos:
-                    altitude = pos['altitude']
-        
-        # Format GPS information
-        coords = format_coordinates(latitude, longitude)
-        location_info = coords if coords != "N/A" else "N/A"
-        altitude_info = f"{altitude}m" if altitude else "N/A"
-        
-        print(f"\n{'='*60}")
-        print(f"📨 MESSAGE [{timestamp}]")
-        print(f"From: {sender_name}")
-        print(f"{message}")
-        print(f"RSSI: {rssi} dBm | SNR: {snr} dB | Battery: {battery_info}")
-        
-        if coords != "N/A":
-            maps_link = get_google_maps_link(latitude, longitude)
-            if maps_link:
-                print(f"Map: {maps_link}")
-        
-        print(f"{'='*60}\n")
-        sys.stdout.flush()
-        
-        # Send to cloud
-        if CLOUD_MODE:
-            send_to_cloud({
-                'type': 'message',
-                'data': {
-                    'type': 'message',
-                    'timestamp': timestamp,
-                    'from': sender_name,
-                    'message': message,
-                    'location': coords if coords != "N/A" else None,
-                    'altitude': altitude_info if altitude_info != "N/A" else None,
-                    'rssi': str(rssi) if rssi != 'N/A' else None,
-                    'snr': str(snr) if snr != 'N/A' else None,
-                    'battery': battery_info if battery_info != "N/A" else None,
-                    'mapLink': get_google_maps_link(latitude, longitude) if coords != "N/A" else None
+            currentPacket = {
+                type: packetType,
+                timestamp: timestamp || new Date().toISOString(),
+                from: null,
+                message: null,
+                location: null,
+                altitude: null,
+                rssi: null,
+                snr: null,
+                battery: null,
+                voltage: null,
+                channelUtil: null,
+                airUtil: null,
+                uptime: null,
+                mapLink: null
+            };
+        }
+        else if (currentPacket) {
+            if (line.startsWith('From:')) {
+                currentPacket.from = line.replace('From:', '').trim();
+            }
+            else if (line.startsWith('Battery:')) {
+                const batteryMatch = line.match(/Battery:\s*(\d+)%/);
+                const voltageMatch = line.match(/Voltage:\s*([\d.]+)V/);
+                if (batteryMatch) currentPacket.battery = batteryMatch[1] + '%';
+                if (voltageMatch) currentPacket.voltage = voltageMatch[1] + 'V';
+            }
+            else if (line.startsWith('Channel Util:')) {
+                const channelMatch = line.match(/Channel Util:\s*([\d.]+)%/);
+                const airMatch = line.match(/Air Util TX:\s*([\d.]+)%/);
+                if (channelMatch) currentPacket.channelUtil = channelMatch[1];
+                if (airMatch) currentPacket.airUtil = airMatch[1];
+            }
+            else if (line.startsWith('Uptime:')) {
+                const uptimeMatch = line.match(/Uptime:\s*([\d.]+)\s*hours/);
+                if (uptimeMatch) currentPacket.uptime = uptimeMatch[1];
+            }
+            else if (line.startsWith('Location:')) {
+                const locMatch = line.match(/Location:\s*([-\d.]+,\s*[-\d.]+)/);
+                if (locMatch) currentPacket.location = locMatch[1];
+                const altMatch = line.match(/Altitude:\s*(\d+m)/);
+                if (altMatch) currentPacket.altitude = altMatch[1];
+            }
+            else if (line.startsWith('RSSI:')) {
+                const rssiMatch = line.match(/RSSI:\s*([-\d.]+|N\/A)/);
+                const snrMatch = line.match(/SNR:\s*([-\d.]+|N\/A)/);
+                const batteryMatch = line.match(/Battery:\s*([^\s]+.*?)(?:\s*$)/);
+                
+                if (rssiMatch) currentPacket.rssi = rssiMatch[1];
+                if (snrMatch) currentPacket.snr = snrMatch[1];
+                if (batteryMatch && batteryMatch[1] !== 'N/A') currentPacket.battery = batteryMatch[1];
+            }
+            else if (line.startsWith('Map:')) {
+                currentPacket.mapLink = line.replace('Map:', '').trim();
+            }
+            else if (currentPacket.type === 'message' && !line.startsWith('=') && line.length > 0 && 
+                     !line.startsWith('From:') && !line.startsWith('RSSI:') && !line.startsWith('Map:')) {
+                if (!currentPacket.message) {
+                    currentPacket.message = line;
                 }
-            })
+            }
+        }
+    }
+    
+    if (currentPacket) {
+        processPacket(currentPacket);
+    }
+}
 
-def onPosition(packet, interface):
-    """Handle position updates"""
-    if 'decoded' in packet and 'position' in packet['decoded']:
-        sender_id = packet['from']
-        position = packet['decoded']['position']
+function processPacket(packet) {
+    if (packet.type === 'telemetry' && packet.from) {
+        const telemetryData = {
+            battery: packet.battery,
+            voltage: packet.voltage,
+            channelUtil: packet.channelUtil,
+            airUtil: packet.airUtil,
+            uptime: packet.uptime,
+            timestamp: packet.timestamp
+        };
         
-        latitude = position.get('latitude')
-        longitude = position.get('longitude')
-        altitude = position.get('altitude')
+        nodeTelemetry.set(packet.from, telemetryData);
         
-        # Skip if no valid coordinates
-        if not latitude or not longitude:
-            return
+        if (nodePositions.has(packet.from)) {
+            const pos = nodePositions.get(packet.from);
+            pos.battery = packet.battery;
+            nodePositions.set(packet.from, pos);
+        }
         
-        rssi = packet.get('rxRssi', 'N/A')
-        snr = packet.get('rxSnr', 'N/A')
+        io.emit('telemetry-update', {
+            from: packet.from,
+            ...telemetryData
+        });
         
-        # Get timestamp
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if 'rxTime' in packet:
-            timestamp = datetime.fromtimestamp(packet['rxTime']).strftime("%Y-%m-%d %H:%M:%S")
+        console.log(`Updated telemetry for ${packet.from}: ${packet.battery}`);
+    }
+    
+    if (packet.type === 'message' && packet.message) {
+        if (!packet.battery || packet.battery === 'N/A') {
+            if (nodeTelemetry.has(packet.from)) {
+                packet.battery = nodeTelemetry.get(packet.from).battery;
+            }
+        }
         
-        sender_name = get_node_name(sender_id, interface)
-        battery_info = get_battery_info(sender_id)
-        
-        # Format GPS information
-        coords = format_coordinates(latitude, longitude)
-        altitude_info = f"{altitude}m" if altitude else "N/A"
-        
-        print(f"\n{'='*60}")
-        print(f"📍 POSITION UPDATE [{timestamp}]")
-        print(f"From: {sender_name}")
-        print(f"Location: {coords} | Altitude: {altitude_info}")
-        print(f"RSSI: {rssi} dBm | SNR: {snr} dB | Battery: {battery_info}")
-        
-        maps_link = get_google_maps_link(latitude, longitude)
-        if maps_link:
-            print(f"Map: {maps_link}")
-        
-        print(f"{'='*60}\n")
-        sys.stdout.flush()
-        
-        # Send to cloud
-        if CLOUD_MODE:
-            send_to_cloud({
-                'type': 'position',
-                'data': {
-                    'type': 'position',
-                    'timestamp': timestamp,
-                    'from': sender_name,
-                    'location': coords,
-                    'altitude': altitude_info,
-                    'rssi': str(rssi) if rssi != 'N/A' else None,
-                    'snr': str(snr) if snr != 'N/A' else None,
-                    'battery': battery_info if battery_info != "N/A" else None,
-                    'mapLink': maps_link
+        recentMessages.push(packet);
+        if (recentMessages.length > MAX_MESSAGES) {
+            recentMessages.shift();
+        }
+        io.emit('new-message', packet);
+    }
+    
+    if (packet.location) {
+        const [lat, lng] = packet.location.split(',').map(s => parseFloat(s.trim()));
+        if (!isNaN(lat) && !isNaN(lng)) {
+            if (!packet.battery || packet.battery === 'N/A') {
+                if (nodeTelemetry.has(packet.from)) {
+                    packet.battery = nodeTelemetry.get(packet.from).battery;
                 }
-            })
-
-# Connect
-print("Connecting to Meshtastic device...")
-if CLOUD_MODE:
-    print(f"☁️  Cloud mode enabled - will forward to {SERVER_URL}")
-else:
-    print("🏠 Local mode - no cloud forwarding")
-sys.stdout.flush()
-
-interface = meshtastic.serial_interface.SerialInterface('/dev/ttyUSB0')
-
-# Subscribe to messages, position updates, and telemetry
-pub.subscribe(onReceive, "meshtastic.receive.text")
-pub.subscribe(onPosition, "meshtastic.receive.position")
-pub.subscribe(onTelemetry, "meshtastic.receive.telemetry")
-
-# Start cloud sender thread if in cloud mode
-if CLOUD_MODE:
-    sender_thread = Thread(target=cloud_sender_thread, daemon=True)
-    sender_thread.start()
-
-# Initial telemetry request
-print("Requesting telemetry from all nodes...")
-sys.stdout.flush()
-try:
-    interface.sendTelemetry()
-    print("📡 Requested telemetry from all nodes")
-except Exception as e:
-    print(f"Note: Initial telemetry request: {e}")
-sys.stdout.flush()
-
-print(f"Listening for messages and telemetry...")
-print(f"Will request telemetry every {TELEMETRY_INTERVAL} seconds")
-print(f"Will check for new nodes every {NODE_CHECK_INTERVAL} seconds")
-sys.stdout.flush()
-
-# Track known nodes
-known_nodes = set(interface.nodes.keys())
-last_telemetry_request = time.time()
-last_node_check = time.time()
-
-try:
-    while True:
-        current_time = time.time()
-        
-        # Request telemetry from all nodes periodically
-        if current_time - last_telemetry_request >= TELEMETRY_INTERVAL:
-            print(f"\n📡 Requesting telemetry from all nodes...")
-            sys.stdout.flush()
-            try:
-                interface.sendTelemetry()
-                print(f"✓ Telemetry request sent")
-            except Exception as e:
-                print(f"✗ Failed to request telemetry: {e}")
-            sys.stdout.flush()
-            last_telemetry_request = current_time
-        
-        # Check for new nodes periodically
-        if current_time - last_node_check >= NODE_CHECK_INTERVAL:
-            current_nodes = set(interface.nodes.keys())
-            new_nodes = current_nodes - known_nodes
+            }
             
-            if new_nodes:
-                print(f"\n🆕 Detected {len(new_nodes)} new node(s)!")
-                for node_id in new_nodes:
-                    node_name = get_node_name(node_id, interface)
-                    print(f"   - {node_name} (0x{node_id:08x})")
-                sys.stdout.flush()
+            const posData = {
+                lat,
+                lng,
+                from: packet.from,
+                timestamp: packet.timestamp,
+                altitude: packet.altitude,
+                battery: packet.battery,
+                rssi: packet.rssi,
+                snr: packet.snr
+            };
             
-            known_nodes = current_nodes
-            if len(known_nodes) > 0:
-                print(f"📊 Total nodes in mesh: {len(known_nodes)}")
-                sys.stdout.flush()
+            nodePositions.set(packet.from, posData);
+            io.emit('position-update', posData);
+        }
+    }
+}
+
+// WebSocket connection with rate limiting
+const connectedClients = new Set();
+const MAX_CLIENTS = 100;
+
+io.on('connection', (socket) => {
+    // Limit concurrent connections
+    if (connectedClients.size >= MAX_CLIENTS) {
+        socket.disconnect();
+        return;
+    }
+    
+    connectedClients.add(socket.id);
+    console.log(`Client connected (${connectedClients.size} total)`);
+    
+    const enrichedMessages = recentMessages.map(msg => {
+        if (nodeTelemetry.has(msg.from) && (!msg.battery || msg.battery === 'N/A')) {
+            return { ...msg, battery: nodeTelemetry.get(msg.from).battery };
+        }
+        return msg;
+    });
+    
+    const enrichedPositions = Array.from(nodePositions.values()).map(pos => {
+        if (nodeTelemetry.has(pos.from) && (!pos.battery || pos.battery === 'N/A')) {
+            return { ...pos, battery: nodeTelemetry.get(pos.from).battery };
+        }
+        return pos;
+    });
+    
+    socket.emit('initial-data', {
+        messages: enrichedMessages,
+        positions: enrichedPositions
+    });
+    
+    socket.on('disconnect', () => {
+        connectedClients.delete(socket.id);
+        console.log(`Client disconnected (${connectedClients.size} total)`);
+    });
+});
+
+// Start Python listener
+const pythonProcess = spawn('python3', ['-u', 'meshtastic_listener.py']);
+
+pythonProcess.stdout.on('data', (data) => {
+    console.log(data.toString());
+    parsePythonOutput(data);
+});
+
+pythonProcess.stderr.on('data', (data) => {
+    console.error(`Python Error: ${data}`);
+});
+
+pythonProcess.on('close', (code) => {
+    console.log(`Python process exited with code ${code}`);
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        uptime: process.uptime(),
+        connections: connectedClients.size 
+    });
+});
+
+// Start server
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
+    console.log(`Access from network: http://YOUR_IP:${PORT}`);
+});
+
+// Cleanup
+process.on('SIGINT', () => {
+    console.log('\nShutting down...');
+    pythonProcess.kill();
+    process.exit();
+});const express = require('express');
+const http = require('http');
+const socketIo = require('socket.io');
+const { spawn } = require('child_process');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+
+const app = express();
+const server = http.createServer(app);
+const io = socketIo(server, {
+    cors: {
+        origin: process.env.ALLOWED_ORIGINS || "*",
+        methods: ["GET", "POST"]
+    }
+});
+
+const PORT = process.env.PORT || 3000;
+
+// Security middleware
+app.use(helmet({
+    contentSecurityPolicy: false, // Allow WebSocket connections
+}));
+
+// Rate limiting
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100 // limit each IP to 100 requests per windowMs
+});
+app.use(limiter);
+
+// Serve static files
+app.use(express.static('public'));
+
+// Store recent messages and positions
+const recentMessages = [];
+const nodePositions = new Map();
+const nodeTelemetry = new Map();
+const MAX_MESSAGES = 50;
+
+// Parse Python script output
+function parsePythonOutput(data) {
+    const lines = data.toString().split('\n');
+    let currentPacket = null;
+    
+    for (let line of lines) {
+        line = line.trim();
+        
+        if (line.includes('📨 MESSAGE') || line.includes('📍 POSITION UPDATE') || line.includes('📊 TELEMETRY')) {
+            if (currentPacket) {
+                processPacket(currentPacket);
+            }
             
-            last_node_check = current_time
+            const timestamp = line.match(/\[(.*?)\]/)?.[1];
+            let packetType = 'unknown';
+            if (line.includes('📨 MESSAGE')) packetType = 'message';
+            else if (line.includes('📍 POSITION UPDATE')) packetType = 'position';
+            else if (line.includes('📊 TELEMETRY')) packetType = 'telemetry';
+            
+            currentPacket = {
+                type: packetType,
+                timestamp: timestamp || new Date().toISOString(),
+                from: null,
+                message: null,
+                location: null,
+                altitude: null,
+                rssi: null,
+                snr: null,
+                battery: null,
+                voltage: null,
+                channelUtil: null,
+                airUtil: null,
+                uptime: null,
+                mapLink: null
+            };
+        }
+        else if (currentPacket) {
+            if (line.startsWith('From:')) {
+                currentPacket.from = line.replace('From:', '').trim();
+            }
+            else if (line.startsWith('Battery:')) {
+                const batteryMatch = line.match(/Battery:\s*(\d+)%/);
+                const voltageMatch = line.match(/Voltage:\s*([\d.]+)V/);
+                if (batteryMatch) currentPacket.battery = batteryMatch[1] + '%';
+                if (voltageMatch) currentPacket.voltage = voltageMatch[1] + 'V';
+            }
+            else if (line.startsWith('Channel Util:')) {
+                const channelMatch = line.match(/Channel Util:\s*([\d.]+)%/);
+                const airMatch = line.match(/Air Util TX:\s*([\d.]+)%/);
+                if (channelMatch) currentPacket.channelUtil = channelMatch[1];
+                if (airMatch) currentPacket.airUtil = airMatch[1];
+            }
+            else if (line.startsWith('Uptime:')) {
+                const uptimeMatch = line.match(/Uptime:\s*([\d.]+)\s*hours/);
+                if (uptimeMatch) currentPacket.uptime = uptimeMatch[1];
+            }
+            else if (line.startsWith('Location:')) {
+                const locMatch = line.match(/Location:\s*([-\d.]+,\s*[-\d.]+)/);
+                if (locMatch) currentPacket.location = locMatch[1];
+                const altMatch = line.match(/Altitude:\s*(\d+m)/);
+                if (altMatch) currentPacket.altitude = altMatch[1];
+            }
+            else if (line.startsWith('RSSI:')) {
+                const rssiMatch = line.match(/RSSI:\s*([-\d.]+|N\/A)/);
+                const snrMatch = line.match(/SNR:\s*([-\d.]+|N\/A)/);
+                const batteryMatch = line.match(/Battery:\s*([^\s]+.*?)(?:\s*$)/);
+                
+                if (rssiMatch) currentPacket.rssi = rssiMatch[1];
+                if (snrMatch) currentPacket.snr = snrMatch[1];
+                if (batteryMatch && batteryMatch[1] !== 'N/A') currentPacket.battery = batteryMatch[1];
+            }
+            else if (line.startsWith('Map:')) {
+                currentPacket.mapLink = line.replace('Map:', '').trim();
+            }
+            else if (currentPacket.type === 'message' && !line.startsWith('=') && line.length > 0 && 
+                     !line.startsWith('From:') && !line.startsWith('RSSI:') && !line.startsWith('Map:')) {
+                if (!currentPacket.message) {
+                    currentPacket.message = line;
+                }
+            }
+        }
+    }
+    
+    if (currentPacket) {
+        processPacket(currentPacket);
+    }
+}
+
+function processPacket(packet) {
+    if (packet.type === 'telemetry' && packet.from) {
+        const telemetryData = {
+            battery: packet.battery,
+            voltage: packet.voltage,
+            channelUtil: packet.channelUtil,
+            airUtil: packet.airUtil,
+            uptime: packet.uptime,
+            timestamp: packet.timestamp
+        };
         
-        time.sleep(1)
+        nodeTelemetry.set(packet.from, telemetryData);
         
-except KeyboardInterrupt:
-    print("\nStopping...")
-    interface.close()
+        if (nodePositions.has(packet.from)) {
+            const pos = nodePositions.get(packet.from);
+            pos.battery = packet.battery;
+            nodePositions.set(packet.from, pos);
+        }
+        
+        io.emit('telemetry-update', {
+            from: packet.from,
+            ...telemetryData
+        });
+        
+        console.log(`Updated telemetry for ${packet.from}: ${packet.battery}`);
+    }
+    
+    if (packet.type === 'message' && packet.message) {
+        if (!packet.battery || packet.battery === 'N/A') {
+            if (nodeTelemetry.has(packet.from)) {
+                packet.battery = nodeTelemetry.get(packet.from).battery;
+            }
+        }
+        
+        recentMessages.push(packet);
+        if (recentMessages.length > MAX_MESSAGES) {
+            recentMessages.shift();
+        }
+        io.emit('new-message', packet);
+    }
+    
+    if (packet.location) {
+        const [lat, lng] = packet.location.split(',').map(s => parseFloat(s.trim()));
+        if (!isNaN(lat) && !isNaN(lng)) {
+            if (!packet.battery || packet.battery === 'N/A') {
+                if (nodeTelemetry.has(packet.from)) {
+                    packet.battery = nodeTelemetry.get(packet.from).battery;
+                }
+            }
+            
+            const posData = {
+                lat,
+                lng,
+                from: packet.from,
+                timestamp: packet.timestamp,
+                altitude: packet.altitude,
+                battery: packet.battery,
+                rssi: packet.rssi,
+                snr: packet.snr
+            };
+            
+            nodePositions.set(packet.from, posData);
+            io.emit('position-update', posData);
+        }
+    }
+}
+
+// WebSocket connection with rate limiting
+const connectedClients = new Set();
+const MAX_CLIENTS = 100;
+
+io.on('connection', (socket) => {
+    // Limit concurrent connections
+    if (connectedClients.size >= MAX_CLIENTS) {
+        socket.disconnect();
+        return;
+    }
+    
+    connectedClients.add(socket.id);
+    console.log(`Client connected (${connectedClients.size} total)`);
+    
+    const enrichedMessages = recentMessages.map(msg => {
+        if (nodeTelemetry.has(msg.from) && (!msg.battery || msg.battery === 'N/A')) {
+            return { ...msg, battery: nodeTelemetry.get(msg.from).battery };
+        }
+        return msg;
+    });
+    
+    const enrichedPositions = Array.from(nodePositions.values()).map(pos => {
+        if (nodeTelemetry.has(pos.from) && (!pos.battery || pos.battery === 'N/A')) {
+            return { ...pos, battery: nodeTelemetry.get(pos.from).battery };
+        }
+        return pos;
+    });
+    
+    socket.emit('initial-data', {
+        messages: enrichedMessages,
+        positions: enrichedPositions
+    });
+    
+    socket.on('disconnect', () => {
+        connectedClients.delete(socket.id);
+        console.log(`Client disconnected (${connectedClients.size} total)`);
+    });
+});
+
+// Start Python listener
+const pythonProcess = spawn('python3', ['-u', 'meshtastic_listener.py']);
+
+pythonProcess.stdout.on('data', (data) => {
+    console.log(data.toString());
+    parsePythonOutput(data);
+});
+
+pythonProcess.stderr.on('data', (data) => {
+    console.error(`Python Error: ${data}`);
+});
+
+pythonProcess.on('close', (code) => {
+    console.log(`Python process exited with code ${code}`);
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        uptime: process.uptime(),
+        connections: connectedClients.size 
+    });
+});
+
+// Start server
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
+    console.log(`Access from network: http://YOUR_IP:${PORT}`);
+});
+
+// Cleanup
+process.on('SIGINT', () => {
+    console.log('\nShutting down...');
+    pythonProcess.kill();
+    process.exit();
+});
