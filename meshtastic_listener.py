@@ -18,6 +18,9 @@ sys.stderr.reconfigure(line_buffering=True)
 SERVER_URL = os.getenv('SERVER_URL', None)
 CLOUD_MODE = SERVER_URL is not None
 
+# Coordinates log file
+COORDS_LOG_FILE = "gps_coordinates.txt"
+
 # Message queue for batch sending
 message_queue = Queue()
 BATCH_SIZE = 5
@@ -48,6 +51,30 @@ sys.stdout.flush()
 
 # Store telemetry data for each node
 node_telemetry = {}
+
+def save_coordinates_to_file(timestamp, sender_name, latitude, longitude, altitude=None):
+    """Save GPS coordinates to a text file"""
+    try:
+        with open(COORDS_LOG_FILE, 'a', encoding='utf-8') as f:
+            coords = f"{latitude:.6f}, {longitude:.6f}"
+            maps_link = f"https://maps.google.com/?q={latitude},{longitude}"
+            
+            f.write(f"\n{'='*60}\n")
+            f.write(f"📍 GPS COORDINATES LOGGED\n")
+            f.write(f"Timestamp: {timestamp}\n")
+            f.write(f"Node: {sender_name}\n")
+            f.write(f"Coordinates: {coords}\n")
+            if altitude:
+                f.write(f"Altitude: {altitude}m\n")
+            f.write(f"Google Maps: {maps_link}\n")
+            f.write(f"{'='*60}\n")
+        
+        print(f"💾 Coordinates saved to {COORDS_LOG_FILE}")
+        sys.stdout.flush()
+        
+    except Exception as e:
+        print(f"❌ Error saving coordinates to file: {e}")
+        sys.stdout.flush()
 
 def format_coordinates(latitude, longitude):
     """Format coordinates for Google Maps"""
@@ -250,6 +277,10 @@ def onReceive(packet, interface):
         location_info = coords if coords != "N/A" else "N/A"
         altitude_info = f"{altitude}m" if altitude else "N/A"
         
+        # Save coordinates to file if available
+        if latitude and longitude:
+            save_coordinates_to_file(timestamp, sender_name, latitude, longitude, altitude)
+        
         print(f"\n{'='*60}")
         print(f"📨 MESSAGE [{timestamp}]")
         print(f"From: {sender_name}")
@@ -311,6 +342,9 @@ def onPosition(packet, interface):
         coords = format_coordinates(latitude, longitude)
         altitude_info = f"{altitude}m" if altitude else "N/A"
         
+        # Save coordinates to file
+        save_coordinates_to_file(timestamp, sender_name, latitude, longitude, altitude)
+        
         print(f"\n{'='*60}")
         print(f"📍 POSITION UPDATE [{timestamp}]")
         print(f"From: {sender_name}")
@@ -347,6 +381,7 @@ if CLOUD_MODE:
     print(f"☁️  Cloud mode enabled - will forward to {SERVER_URL}")
 else:
     print("🏠 Local mode - no cloud forwarding")
+print(f"📝 Coordinates will be logged to: {COORDS_LOG_FILE}")
 sys.stdout.flush()
 
 interface = meshtastic.serial_interface.SerialInterface('/dev/ttyUSB0')
