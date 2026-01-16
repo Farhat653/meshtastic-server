@@ -19,7 +19,7 @@ SERVER_URL = os.getenv('SERVER_URL', None)
 CLOUD_MODE = SERVER_URL is not None
 
 # Coordinates log file
-COORDS_LOG_FILE = "/home/pi/logs/gps_coordinates.txt"
+COORDS_LOG_FILE = "/home/mp/logs/gps_coordinates.txt"
 
 # Message queue for batch sending
 message_queue = Queue()
