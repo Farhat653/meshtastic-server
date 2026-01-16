@@ -29,13 +29,13 @@ NODE_CHECK_INTERVAL = 60  # Check for new nodes every 60 seconds
 
 # Custom node name mapping - THESE TAKE PRIORITY OVER DEVICE NAMES
 NODE_NAMES = {
-    0x33687054: "Lebron Daddy",
-    0x336879dc: "Steph Curry",
-    0x9e7595c4: "Michaelangelo",
-    0x9e755a5c: "Node 1",
-    0x9e76074c: "Master Splinter",
-    0x9e75877c: "Leonardo",
-    0xdb58af14: "Donatelo"
+    0x33687054: "Dead",
+    0x336879dc: "Node Echo",
+    0x9e7595c4: "Node Charlie",
+    0x9e755a5c: "Node Alpha",
+    0x9e76074c: "Node Foxtrot",
+    0x9e75877c: "Node Delta",
+    0xdb58af14: "Node Bravo"
 }
 
 # Print the node mapping on startup for verification
