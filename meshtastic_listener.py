@@ -23,13 +23,9 @@ message_queue = Queue()
 BATCH_SIZE = 5
 BATCH_TIMEOUT = 3  # seconds
 
-# Telemetry and node discovery settings
-TELEMETRY_INTERVAL = 30  # Request telemetry every 30 seconds
-NODE_CHECK_INTERVAL = 60  # Check for new nodes every 60 seconds
-
 # Custom node name mapping - THESE TAKE PRIORITY OVER DEVICE NAMES
 NODE_NAMES = {
-    0x33687054: "Not Working",
+    0x33687054: "Not working",
     0x336879dc: "Node Echo",
     0x9e7595c4: "Node Charlie",
     0x9e755a5c: "Node Alpha",
@@ -361,63 +357,12 @@ if CLOUD_MODE:
     sender_thread = Thread(target=cloud_sender_thread, daemon=True)
     sender_thread.start()
 
-# Initial telemetry request
-print("Requesting telemetry from all nodes...")
+print("Listening for messages, position updates, and telemetry...\n")
 sys.stdout.flush()
-try:
-    interface.sendTelemetry()
-    print("📡 Requested telemetry from all nodes")
-except Exception as e:
-    print(f"Note: Initial telemetry request: {e}")
-sys.stdout.flush()
-
-print(f"Listening for messages and telemetry...")
-print(f"Will request telemetry every {TELEMETRY_INTERVAL} seconds")
-print(f"Will check for new nodes every {NODE_CHECK_INTERVAL} seconds")
-sys.stdout.flush()
-
-# Track known nodes
-known_nodes = set(interface.nodes.keys())
-last_telemetry_request = time.time()
-last_node_check = time.time()
 
 try:
     while True:
-        current_time = time.time()
-        
-        # Request telemetry from all nodes periodically
-        if current_time - last_telemetry_request >= TELEMETRY_INTERVAL:
-            print(f"\n📡 Requesting telemetry from all nodes...")
-            sys.stdout.flush()
-            try:
-                interface.sendTelemetry()
-                print(f"✓ Telemetry request sent")
-            except Exception as e:
-                print(f"✗ Failed to request telemetry: {e}")
-            sys.stdout.flush()
-            last_telemetry_request = current_time
-        
-        # Check for new nodes periodically
-        if current_time - last_node_check >= NODE_CHECK_INTERVAL:
-            current_nodes = set(interface.nodes.keys())
-            new_nodes = current_nodes - known_nodes
-            
-            if new_nodes:
-                print(f"\n🆕 Detected {len(new_nodes)} new node(s)!")
-                for node_id in new_nodes:
-                    node_name = get_node_name(node_id, interface)
-                    print(f"   - {node_name} (0x{node_id:08x})")
-                sys.stdout.flush()
-            
-            known_nodes = current_nodes
-            if len(known_nodes) > 0:
-                print(f"📊 Total nodes in mesh: {len(known_nodes)}")
-                sys.stdout.flush()
-            
-            last_node_check = current_time
-        
-        time.sleep(1)
-        
+        time.sleep(0.1)
 except KeyboardInterrupt:
     print("\nStopping...")
     interface.close()
