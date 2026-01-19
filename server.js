@@ -28,6 +28,9 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
+// JSON body parser for API endpoints
+app.use(express.json());
+
 // Serve static files
 app.use(express.static('public'));
 
@@ -191,6 +194,51 @@ function processPacket(packet) {
         }
     }
 }
+
+// API endpoint to receive batch messages from remote Meshtastic nodes
+app.post('/api/messages/batch', (req, res) => {
+    try {
+        const { messages } = req.body;
+        
+        if (!messages || !Array.isArray(messages)) {
+            return res.status(400).json({ error: 'Invalid request: messages array required' });
+        }
+        
+        console.log(`📦 Received batch of ${messages.length} messages from remote node`);
+        
+        // Process each message in the batch
+        messages.forEach(msg => {
+            if (msg.type && msg.data) {
+                console.log(`  └─ [${msg.type}] from ${msg.data.from || 'unknown'}`);
+                processPacket({
+                    type: msg.type,
+                    timestamp: msg.data.timestamp,
+                    from: msg.data.from,
+                    message: msg.data.message,
+                    location: msg.data.location,
+                    altitude: msg.data.altitude,
+                    rssi: msg.data.rssi,
+                    snr: msg.data.snr,
+                    battery: msg.data.battery,
+                    voltage: msg.data.voltage,
+                    channelUtil: msg.data.channelUtil,
+                    airUtil: msg.data.airUtil,
+                    uptime: msg.data.uptime,
+                    mapLink: msg.data.mapLink
+                });
+            }
+        });
+        
+        res.status(200).json({ 
+            success: true, 
+            received: messages.length,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('❌ Error processing batch:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
 
 // WebSocket connection with rate limiting
 const connectedClients = new Set();
