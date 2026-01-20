@@ -9,6 +9,7 @@ import os
 import requests
 from threading import Thread
 from queue import Queue
+import hashlib
 
 # Force unbuffered output so Node.js can read it in real-time
 sys.stdout.reconfigure(line_buffering=True)
@@ -45,6 +46,125 @@ sys.stdout.flush()
 # Store telemetry data for each node
 node_telemetry = {}
 
+# Store message IDs to prevent duplicates
+seen_messages = set()
+seen_positions = {}  # Store last position per node
+MESSAGE_CACHE_SIZE = 1000  # Keep last 1000 message IDs
+
+# Store all messages with IDs for deletion
+stored_messages = []
+message_counter = 0
+
+def generate_message_id(packet, content_type):
+    """Generate unique ID for message/position to detect duplicates"""
+    # Create hash from packet data
+    if content_type == "message":
+        data = f"{packet.get('from')}_{packet['decoded'].get('text')}_{packet.get('rxTime', time.time())}"
+    elif content_type == "position":
+        pos = packet['decoded']['position']
+        data = f"{packet.get('from')}_{pos.get('latitude')}_{pos.get('longitude')}_{packet.get('rxTime', time.time())}"
+    else:
+        data = f"{packet.get('from')}_{content_type}_{packet.get('rxTime', time.time())}"
+    
+    return hashlib.md5(data.encode()).hexdigest()
+
+def is_duplicate_message(packet):
+    """Check if we've already seen this exact message"""
+    msg_id = generate_message_id(packet, "message")
+    
+    if msg_id in seen_messages:
+        return True
+    
+    seen_messages.add(msg_id)
+    
+    # Limit cache size
+    if len(seen_messages) > MESSAGE_CACHE_SIZE:
+        seen_messages.pop()
+    
+    return False
+
+def is_duplicate_position(packet):
+    """Check if this is a duplicate position update"""
+    sender_id = packet['from']
+    position = packet['decoded']['position']
+    
+    latitude = position.get('latitude')
+    longitude = position.get('longitude')
+    altitude = position.get('altitude')
+    
+    # Create position signature
+    pos_sig = f"{latitude:.6f}_{longitude:.6f}_{altitude}"
+    
+    # Check if we've seen this exact position from this node
+    if sender_id in seen_positions:
+        if seen_positions[sender_id] == pos_sig:
+            return True
+    
+    # Store this position
+    seen_positions[sender_id] = pos_sig
+    return False
+
+def delete_message(message_id):
+    """Delete a message by ID"""
+    global stored_messages
+    
+    initial_count = len(stored_messages)
+    stored_messages = [msg for msg in stored_messages if msg['id'] != message_id]
+    
+    deleted = initial_count - len(stored_messages)
+    
+    if deleted > 0:
+        print(f"🗑️  Deleted message ID: {message_id}")
+        
+        # Send delete command to cloud
+        if CLOUD_MODE:
+            try:
+                response = requests.post(
+                    f"{SERVER_URL}/api/messages/delete",
+                    json={'messageId': message_id},
+                    timeout=5
+                )
+                if response.status_code == 200:
+                    print(f"☁️  ✓ Message deleted from cloud")
+                else:
+                    print(f"☁️  ✗ Failed to delete from cloud: {response.status_code}")
+            except Exception as e:
+                print(f"☁️  ✗ Cloud delete error: {e}")
+        
+        sys.stdout.flush()
+        return True
+    else:
+        print(f"❌ Message ID {message_id} not found")
+        sys.stdout.flush()
+        return False
+
+def clear_all_messages():
+    """Clear all stored messages"""
+    global stored_messages, seen_messages, seen_positions
+    
+    count = len(stored_messages)
+    stored_messages.clear()
+    seen_messages.clear()
+    seen_positions.clear()
+    
+    print(f"🗑️  Cleared {count} messages from local storage")
+    
+    # Send clear command to cloud
+    if CLOUD_MODE:
+        try:
+            response = requests.post(
+                f"{SERVER_URL}/api/messages/clear",
+                timeout=5
+            )
+            if response.status_code == 200:
+                print(f"☁️  ✓ All messages cleared from cloud")
+            else:
+                print(f"☁️  ✗ Failed to clear cloud: {response.status_code}")
+        except Exception as e:
+            print(f"☁️  ✗ Cloud clear error: {e}")
+    
+    sys.stdout.flush()
+
 def format_coordinates(latitude, longitude):
     """Format coordinates for Google Maps"""
     if latitude and longitude:
@@ -59,7 +179,7 @@ def get_google_maps_link(latitude, longitude):
 
 def get_node_name(sender_id, interface):
     """Get node name - CUSTOM MAPPING TAKES PRIORITY"""
-    # ALWAYS check custom mapping FIRST - this is the key fix!
+    # ALWAYS check custom mapping FIRST
     if sender_id in NODE_NAMES:
         return NODE_NAMES[sender_id]
     
@@ -212,7 +332,13 @@ def onTelemetry(packet, interface):
 
 def onReceive(packet, interface):
     """Handle text messages"""
+    global message_counter, stored_messages
+    
     if 'decoded' in packet and 'text' in packet['decoded']:
+        # Check for duplicates first
+        if is_duplicate_message(packet):
+            return  # Skip duplicate message
+        
         sender_id = packet['from']
         message = packet['decoded']['text']
         rssi = packet.get('rxRssi', 'N/A')
@@ -246,8 +372,12 @@ def onReceive(packet, interface):
         location_info = coords if coords != "N/A" else "N/A"
         altitude_info = f"{altitude}m" if altitude else "N/A"
         
+        # Generate message ID
+        message_counter += 1
+        msg_id = f"msg_{message_counter}_{int(time.time())}"
+        
         print(f"\n{'='*60}")
-        print(f"📨 MESSAGE [{timestamp}]")
+        print(f"📨 MESSAGE [ID: {msg_id}] [{timestamp}]")
         print(f"From: {sender_name}")
         print(f"{message}")
         print(f"RSSI: {rssi} dBm | SNR: {snr} dB | Battery: {battery_info}")
@@ -260,11 +390,21 @@ def onReceive(packet, interface):
         print(f"{'='*60}\n")
         sys.stdout.flush()
         
+        # Store message locally
+        stored_messages.append({
+            'id': msg_id,
+            'type': 'message',
+            'timestamp': timestamp,
+            'from': sender_name,
+            'message': message
+        })
+        
         # Send to cloud
         if CLOUD_MODE:
             send_to_cloud({
                 'type': 'message',
                 'data': {
+                    'id': msg_id,
                     'type': 'message',
                     'timestamp': timestamp,
                     'from': sender_name,
@@ -280,7 +420,13 @@ def onReceive(packet, interface):
 
 def onPosition(packet, interface):
     """Handle position updates"""
+    global message_counter, stored_messages
+    
     if 'decoded' in packet and 'position' in packet['decoded']:
+        # Check for duplicates first
+        if is_duplicate_position(packet):
+            return  # Skip duplicate position
+        
         sender_id = packet['from']
         position = packet['decoded']['position']
         
@@ -307,8 +453,12 @@ def onPosition(packet, interface):
         coords = format_coordinates(latitude, longitude)
         altitude_info = f"{altitude}m" if altitude else "N/A"
         
+        # Generate message ID
+        message_counter += 1
+        msg_id = f"pos_{message_counter}_{int(time.time())}"
+        
         print(f"\n{'='*60}")
-        print(f"📍 POSITION UPDATE [{timestamp}]")
+        print(f"📍 POSITION UPDATE [ID: {msg_id}] [{timestamp}]")
         print(f"From: {sender_name}")
         print(f"Location: {coords} | Altitude: {altitude_info}")
         print(f"RSSI: {rssi} dBm | SNR: {snr} dB | Battery: {battery_info}")
@@ -320,11 +470,21 @@ def onPosition(packet, interface):
         print(f"{'='*60}\n")
         sys.stdout.flush()
         
+        # Store message locally
+        stored_messages.append({
+            'id': msg_id,
+            'type': 'position',
+            'timestamp': timestamp,
+            'from': sender_name,
+            'location': coords
+        })
+        
         # Send to cloud
         if CLOUD_MODE:
             send_to_cloud({
                 'type': 'position',
                 'data': {
+                    'id': msg_id,
                     'type': 'position',
                     'timestamp': timestamp,
                     'from': sender_name,
@@ -343,6 +503,11 @@ if CLOUD_MODE:
     print(f"☁️  Cloud mode enabled - will forward to {SERVER_URL}")
 else:
     print("🏠 Local mode - no cloud forwarding")
+
+print("\nCommands:")
+print("  Type 'delete <id>' to delete a message (e.g., 'delete msg_1_1234567890')")
+print("  Type 'clear' to delete all messages")
+print("  Press Ctrl+C to exit\n")
 sys.stdout.flush()
 
 interface = meshtastic.serial_interface.SerialInterface('/dev/ttyUSB0')
@@ -363,6 +528,7 @@ sys.stdout.flush()
 try:
     while True:
         time.sleep(0.1)
+        # You can add command input handling here if running interactively
 except KeyboardInterrupt:
     print("\nStopping...")
     interface.close()
