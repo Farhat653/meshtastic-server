@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Meshtastic Monitor</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
     <style>
@@ -561,6 +561,162 @@
         ::-webkit-scrollbar-thumb:hover {
             background: #00a8cc;
         }
+        
+        /* Mobile styles */
+        @media (max-width: 768px) {
+            .container {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto 1fr;
+            }
+            
+            header {
+                padding: 10px 15px;
+                flex-wrap: wrap;
+                gap: 10px;
+            }
+            
+            header h1 {
+                font-size: 18px;
+                flex: 1 1 100%;
+            }
+            
+            .logo {
+                width: 30px;
+                height: 30px;
+            }
+            
+            .header-right {
+                flex: 1 1 100%;
+                justify-content: space-between;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
+            
+            .theme-toggle {
+                padding: 6px 12px;
+                font-size: 12px;
+            }
+            
+            .nodes-status {
+                padding: 6px 12px;
+                flex-wrap: wrap;
+            }
+            
+            .node-count {
+                font-size: 14px;
+            }
+            
+            .node-list {
+                display: none;
+            }
+            
+            .status {
+                font-size: 12px;
+            }
+            
+            .sidebar {
+                position: fixed;
+                bottom: 0;
+                left: 0;
+                right: 0;
+                height: 40vh;
+                max-height: 500px;
+                z-index: 1000;
+                box-shadow: 0 -4px 20px rgba(0,0,0,0.3);
+                transition: transform 0.3s ease, height 0.3s ease, background-color 0.3s ease;
+            }
+            
+            .sidebar.minimized {
+                transform: translateY(calc(100% - 45px));
+            }
+            
+            .sidebar-header {
+                cursor: pointer;
+                position: relative;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 12px 20px;
+                touch-action: manipulation;
+            }
+            
+            .sidebar-header::after {
+                content: '▼';
+                font-size: 12px;
+                transition: transform 0.3s ease;
+            }
+            
+            .sidebar.minimized .sidebar-header::after {
+                transform: rotate(180deg);
+            }
+            
+            .combined-content {
+                padding: 10px;
+            }
+            
+            .section-title {
+                font-size: 12px;
+                margin: 15px 0 8px 0;
+            }
+            
+            .message-card,
+            .location-entry,
+            .position-card {
+                padding: 10px;
+                margin-bottom: 10px;
+            }
+            
+            .message-header,
+            .location-header {
+                font-size: 11px;
+            }
+            
+            .message-text {
+                font-size: 13px;
+            }
+            
+            .location-coords {
+                font-size: 12px;
+            }
+            
+            .message-meta,
+            .location-meta {
+                font-size: 10px;
+                gap: 8px;
+            }
+            
+            #map {
+                height: 100%;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            header h1 {
+                font-size: 16px;
+            }
+            
+            .logo {
+                width: 25px;
+                height: 25px;
+            }
+            
+            .theme-toggle {
+                padding: 5px 10px;
+                font-size: 11px;
+            }
+            
+            .node-count {
+                font-size: 12px;
+            }
+            
+            .status {
+                font-size: 11px;
+            }
+            
+            .sidebar {
+                height: 35vh;
+            }
+        }
     </style>
 </head>
 <body class="dark-mode">
@@ -621,6 +777,71 @@
         const themeIcon = document.getElementById('themeIcon');
         const themeText = document.getElementById('themeText');
         const body = document.body;
+        const sidebar = document.querySelector('.sidebar');
+        const sidebarHeader = document.querySelector('.sidebar-header');
+        
+        // Mobile sidebar toggle
+        let startY = 0;
+        let currentY = 0;
+        let isSidebarMinimized = false;
+        
+        // Check if mobile
+        function isMobile() {
+            return window.innerWidth <= 768;
+        }
+        
+        // Initialize sidebar state on mobile
+        if (isMobile()) {
+            sidebar.classList.add('minimized');
+            isSidebarMinimized = true;
+        }
+        
+        // Toggle sidebar on header click (mobile only)
+        sidebarHeader.addEventListener('click', () => {
+            if (!isMobile()) return;
+            
+            sidebar.classList.toggle('minimized');
+            isSidebarMinimized = !isSidebarMinimized;
+        });
+        
+        // Touch swipe to minimize/maximize sidebar
+        sidebar.addEventListener('touchstart', (e) => {
+            if (!isMobile()) return;
+            startY = e.touches[0].clientY;
+        }, { passive: true });
+        
+        sidebar.addEventListener('touchmove', (e) => {
+            if (!isMobile()) return;
+            currentY = e.touches[0].clientY;
+        }, { passive: true });
+        
+        sidebar.addEventListener('touchend', () => {
+            if (!isMobile()) return;
+            
+            const deltaY = currentY - startY;
+            
+            // Swipe down to minimize
+            if (deltaY > 50 && !isSidebarMinimized) {
+                sidebar.classList.add('minimized');
+                isSidebarMinimized = true;
+            }
+            // Swipe up to maximize
+            else if (deltaY < -50 && isSidebarMinimized) {
+                sidebar.classList.remove('minimized');
+                isSidebarMinimized = false;
+            }
+        });
+        
+        // Reset sidebar state on resize
+        window.addEventListener('resize', () => {
+            if (!isMobile()) {
+                sidebar.classList.remove('minimized');
+                isSidebarMinimized = false;
+            } else if (!sidebar.classList.contains('minimized')) {
+                sidebar.classList.add('minimized');
+                isSidebarMinimized = true;
+            }
+        });
         
         // Load saved theme from localStorage
         const savedTheme = localStorage.getItem('theme') || 'dark-mode';
