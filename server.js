@@ -1,366 +1,368 @@
-const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
-const { spawn } = require('child_process');
-const rateLimit = require('express-rate-limit');
-const helmet = require('helmet');
-const cors = require('cors');
+#!/usr/bin/env python3
+import meshtastic
+import meshtastic.serial_interface
+from pubsub import pub
+from datetime import datetime
+import time
+import sys
+import os
+import requests
+from threading import Thread
+from queue import Queue
 
-const app = express();
-const server = http.createServer(app);
-const io = socketIo(server, {
-    cors: {
-        origin: process.env.ALLOWED_ORIGINS || "*",
-        methods: ["GET", "POST"]
-    },
-    transports: ['websocket', 'polling']
-});
+# Force unbuffered output so Node.js can read it in real-time
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 
-const PORT = process.env.PORT || 3000;
+# Cloud server configuration
+SERVER_URL = os.getenv('SERVER_URL', None)
+CLOUD_MODE = SERVER_URL is not None
 
-// Parse JSON bodies
-app.use(express.json());
+# Message queue for batch sending
+message_queue = Queue()
+BATCH_SIZE = 5
+BATCH_TIMEOUT = 3  # seconds
 
-// CORS middleware
-app.use(cors({
-    origin: process.env.ALLOWED_ORIGINS || "*",
-    credentials: true
-}));
+# Custom node name mapping - THESE TAKE PRIORITY OVER DEVICE NAMES
+NODE_NAMES = {
+    0x33687054: "Not working",
+    0x336879dc: "Node Echo",
+    0x9e7595c4: "Node Charlie",
+    0x9e755a5c: "Node Alpha",
+    0x9e76074c: "Node Foxtrot",
+    0x9e75877c: "Node Delta",
+    0xdb58af14: "Node Bravo"
+}
 
-// Security middleware
-app.use(helmet({
-    contentSecurityPolicy: false,
-    crossOriginEmbedderPolicy: false
-}));
+# Print the node mapping on startup for verification
+print("\n" + "="*60)
+print("NODE MAPPING LOADED:")
+for node_id, name in NODE_NAMES.items():
+    print(f"  0x{node_id:08x} -> {name}")
+print("="*60 + "\n")
+sys.stdout.flush()
 
-// Rate limiting for API endpoints
-const apiLimiter = rateLimit({
-    windowMs: 1 * 60 * 1000,
-    max: 200,
-    message: 'Too many requests from this IP'
-});
+# Store telemetry data for each node
+node_telemetry = {}
 
-// General rate limiting
-const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 500
-});
+def format_coordinates(latitude, longitude):
+    """Format coordinates for Google Maps"""
+    if latitude and longitude:
+        return f"{latitude:.6f}, {longitude:.6f}"
+    return "N/A"
 
-app.use('/api/', apiLimiter);
-app.use(limiter);
+def get_google_maps_link(latitude, longitude):
+    """Generate Google Maps link"""
+    if latitude and longitude:
+        return f"https://maps.google.com/?q={latitude},{longitude}"
+    return None
 
-// Serve static files
-app.use(express.static('public'));
-
-// Store recent messages and positions
-const recentMessages = [];
-const nodePositions = new Map();
-const nodeTelemetry = new Map();
-const MAX_MESSAGES = 50;
-
-// Parse Python script output
-function parsePythonOutput(data) {
-    const lines = data.toString().split('\n');
-    let currentPacket = null;
+def get_node_name(sender_id, interface):
+    """Get node name - CUSTOM MAPPING TAKES PRIORITY"""
+    # ALWAYS check custom mapping FIRST - this is the key fix!
+    if sender_id in NODE_NAMES:
+        return NODE_NAMES[sender_id]
     
-    for (let line of lines) {
-        line = line.trim();
+    # Only if not in custom mapping, try to get name from device info
+    if sender_id in interface.nodes:
+        node = interface.nodes[sender_id]
+        if 'user' in node and 'longName' in node['user']:
+            return node['user']['longName']
+        elif 'user' in node and 'shortName' in node['user']:
+            return node['user']['shortName']
+    
+    # Fallback to hex ID if not found anywhere
+    return f"0x{sender_id:08x}"
+
+def get_battery_info(sender_id):
+    """Get battery information for a node from cached telemetry"""
+    if sender_id in node_telemetry:
+        telemetry = node_telemetry[sender_id]
+        voltage = telemetry.get('voltage')
+        battery_level = telemetry.get('batteryLevel')
         
-        if (line.includes('📨 MESSAGE') || line.includes('📍 POSITION UPDATE') || line.includes('📊 TELEMETRY')) {
-            if (currentPacket) {
-                processPacket(currentPacket);
-            }
+        if voltage and battery_level is not None:
+            return f"{voltage:.2f}V ({battery_level}%)"
+        elif voltage:
+            return f"{voltage:.2f}V"
+        elif battery_level is not None:
+            return f"{battery_level}%"
+    
+    return "N/A"
+
+def send_to_cloud(packet_data):
+    """Send packet data to cloud server queue"""
+    if not CLOUD_MODE:
+        return
+    
+    try:
+        message_queue.put(packet_data)
+    except Exception as e:
+        print(f"Error queuing message: {e}")
+        sys.stdout.flush()
+
+def cloud_sender_thread():
+    """Background thread to send messages to cloud in batches"""
+    if not CLOUD_MODE:
+        return
+    
+    batch = []
+    last_send_time = time.time()
+    
+    print(f"☁️  Cloud sender started - forwarding to {SERVER_URL}")
+    sys.stdout.flush()
+    
+    while True:
+        try:
+            # Try to get a message with timeout
+            try:
+                msg = message_queue.get(timeout=1)
+                batch.append(msg)
+            except:
+                pass
             
-            const timestamp = line.match(/\[(.*?)\]/)?.[1];
-            let packetType = 'unknown';
-            if (line.includes('📨 MESSAGE')) packetType = 'message';
-            else if (line.includes('📍 POSITION UPDATE')) packetType = 'position';
-            else if (line.includes('📊 TELEMETRY')) packetType = 'telemetry';
+            current_time = time.time()
+            should_send = (
+                len(batch) >= BATCH_SIZE or 
+                (len(batch) > 0 and (current_time - last_send_time) >= BATCH_TIMEOUT)
+            )
             
-            currentPacket = {
-                type: packetType,
-                timestamp: timestamp || new Date().toISOString(),
-                from: null,
-                message: null,
-                location: null,
-                altitude: null,
-                rssi: null,
-                snr: null,
-                battery: null,
-                voltage: null,
-                channelUtil: null,
-                airUtil: null,
-                uptime: null,
-                mapLink: null
-            };
-        }
-        else if (currentPacket) {
-            if (line.startsWith('From:')) {
-                currentPacket.from = line.replace('From:', '').trim();
-            }
-            else if (line.startsWith('Battery:')) {
-                const batteryMatch = line.match(/Battery:\s*(\d+)%/);
-                const voltageMatch = line.match(/Voltage:\s*([\d.]+)V/);
-                if (batteryMatch) currentPacket.battery = batteryMatch[1] + '%';
-                if (voltageMatch) currentPacket.voltage = voltageMatch[1] + 'V';
-            }
-            else if (line.startsWith('Channel Util:')) {
-                const channelMatch = line.match(/Channel Util:\s*([\d.]+)%/);
-                const airMatch = line.match(/Air Util TX:\s*([\d.]+)%/);
-                if (channelMatch) currentPacket.channelUtil = channelMatch[1];
-                if (airMatch) currentPacket.airUtil = airMatch[1];
-            }
-            else if (line.startsWith('Uptime:')) {
-                const uptimeMatch = line.match(/Uptime:\s*([\d.]+)\s*hours/);
-                if (uptimeMatch) currentPacket.uptime = uptimeMatch[1];
-            }
-            else if (line.startsWith('Location:')) {
-                const locMatch = line.match(/Location:\s*([-\d.]+,\s*[-\d.]+)/);
-                if (locMatch) currentPacket.location = locMatch[1];
-                const altMatch = line.match(/Altitude:\s*(\d+m)/);
-                if (altMatch) currentPacket.altitude = altMatch[1];
-            }
-            else if (line.startsWith('RSSI:')) {
-                const rssiMatch = line.match(/RSSI:\s*([-\d.]+|N\/A)/);
-                const snrMatch = line.match(/SNR:\s*([-\d.]+|N\/A)/);
-                const batteryMatch = line.match(/Battery:\s*([^\s]+.*?)(?:\s*$)/);
+            if should_send and batch:
+                try:
+                    response = requests.post(
+                        f"{SERVER_URL}/api/messages/batch",
+                        json={'messages': batch},
+                        timeout=10
+                    )
+                    if response.status_code == 200:
+                        print(f"☁️  ✓ Sent {len(batch)} messages to cloud")
+                    else:
+                        print(f"☁️  ✗ Cloud returned {response.status_code}")
+                    sys.stdout.flush()
+                except requests.exceptions.RequestException as e:
+                    print(f"☁️  ✗ Failed to send to cloud: {e}")
+                    sys.stdout.flush()
                 
-                if (rssiMatch) currentPacket.rssi = rssiMatch[1];
-                if (snrMatch) currentPacket.snr = snrMatch[1];
-                if (batteryMatch && batteryMatch[1] !== 'N/A') currentPacket.battery = batteryMatch[1];
-            }
-            else if (line.startsWith('Map:')) {
-                currentPacket.mapLink = line.replace('Map:', '').trim();
-            }
-            else if (currentPacket.type === 'message' && !line.startsWith('=') && line.length > 0 && 
-                     !line.startsWith('From:') && !line.startsWith('RSSI:') && !line.startsWith('Map:')) {
-                if (!currentPacket.message) {
-                    currentPacket.message = line;
-                }
-            }
-        }
-    }
-    
-    if (currentPacket) {
-        processPacket(currentPacket);
-    }
-}
+                batch.clear()
+                last_send_time = current_time
+                
+        except Exception as e:
+            print(f"Cloud sender error: {e}")
+            sys.stdout.flush()
+            time.sleep(1)
 
-function processPacket(packet) {
-    console.log(`Processing ${packet.type} from ${packet.from}`);
-    
-    if (packet.type === 'telemetry' && packet.from) {
-        const telemetryData = {
-            battery: packet.battery,
-            voltage: packet.voltage,
-            channelUtil: packet.channelUtil,
-            airUtil: packet.airUtil,
-            uptime: packet.uptime,
-            timestamp: packet.timestamp
-        };
+def onTelemetry(packet, interface):
+    """Handle telemetry updates (battery, voltage, etc.)"""
+    if 'decoded' in packet and 'telemetry' in packet['decoded']:
+        sender_id = packet['from']
+        sender_name = get_node_name(sender_id, interface)
         
-        nodeTelemetry.set(packet.from, telemetryData);
+        telemetry = packet['decoded']['telemetry']
         
-        if (nodePositions.has(packet.from)) {
-            const pos = nodePositions.get(packet.from);
-            pos.battery = packet.battery;
-            nodePositions.set(packet.from, pos);
-        }
-        
-        io.emit('telemetry-update', {
-            from: packet.from,
-            ...telemetryData
-        });
-        
-        console.log(`✓ Telemetry broadcast for ${packet.from}`);
-    }
-    
-    if (packet.type === 'message' && packet.message) {
-        if (!packet.battery || packet.battery === 'N/A') {
-            if (nodeTelemetry.has(packet.from)) {
-                packet.battery = nodeTelemetry.get(packet.from).battery;
-            }
-        }
-        
-        recentMessages.push(packet);
-        if (recentMessages.length > MAX_MESSAGES) {
-            recentMessages.shift();
-        }
-        io.emit('new-message', packet);
-        console.log(`✓ Message broadcast from ${packet.from}`);
-    }
-    
-    if (packet.location) {
-        const [lat, lng] = packet.location.split(',').map(s => parseFloat(s.trim()));
-        if (!isNaN(lat) && !isNaN(lng)) {
-            if (!packet.battery || packet.battery === 'N/A') {
-                if (nodeTelemetry.has(packet.from)) {
-                    packet.battery = nodeTelemetry.get(packet.from).battery;
-                }
+        # Check for device metrics (battery, voltage, etc.)
+        if 'deviceMetrics' in telemetry:
+            metrics = telemetry['deviceMetrics']
+            
+            # Store telemetry data for this node
+            node_telemetry[sender_id] = {
+                'batteryLevel': metrics.get('batteryLevel'),
+                'voltage': metrics.get('voltage'),
+                'channelUtilization': metrics.get('channelUtilization'),
+                'airUtilTx': metrics.get('airUtilTx'),
+                'uptimeSeconds': metrics.get('uptimeSeconds'),
+                'timestamp': datetime.now()
             }
             
-            const posData = {
-                lat,
-                lng,
-                from: packet.from,
-                timestamp: packet.timestamp,
-                altitude: packet.altitude,
-                battery: packet.battery,
-                rssi: packet.rssi,
-                snr: packet.snr
-            };
+            battery_level = metrics.get('batteryLevel', 'N/A')
+            voltage = metrics.get('voltage', 'N/A')
+            channel_util = metrics.get('channelUtilization', 'N/A')
+            air_util = metrics.get('airUtilTx', 'N/A')
+            uptime = metrics.get('uptimeSeconds', 'N/A')
             
-            nodePositions.set(packet.from, posData);
-            io.emit('position-update', posData);
-            console.log(`✓ Position broadcast for ${packet.from}: ${lat}, ${lng}`);
-        }
-    }
-}
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Only skip printing if it's an unknown node (hex ID format)
+            if not sender_name.startswith("0x"):
+                print(f"\n{'='*60}")
+                print(f"📊 TELEMETRY [{timestamp}]")
+                print(f"From: {sender_name}")
+                print(f"Battery: {battery_level}% | Voltage: {voltage}V")
+                print(f"Channel Util: {channel_util}% | Air Util TX: {air_util}%")
+                if uptime != 'N/A':
+                    uptime_hours = uptime / 3600
+                    print(f"Uptime: {uptime_hours:.1f} hours")
+                print(f"{'='*60}\n")
+                sys.stdout.flush()
+            
+            # Send to cloud
+            if CLOUD_MODE:
+                send_to_cloud({
+                    'type': 'telemetry',
+                    'data': {
+                        'type': 'telemetry',
+                        'timestamp': timestamp,
+                        'from': sender_name,
+                        'battery': f"{battery_level}%" if battery_level != 'N/A' else None,
+                        'voltage': f"{voltage}V" if voltage != 'N/A' else None,
+                        'channelUtil': str(channel_util) if channel_util != 'N/A' else None,
+                        'airUtil': str(air_util) if air_util != 'N/A' else None,
+                        'uptime': str(uptime / 3600) if uptime != 'N/A' else None
+                    }
+                })
 
-// WebSocket connection with rate limiting
-const connectedClients = new Set();
-const MAX_CLIENTS = 100;
+def onReceive(packet, interface):
+    """Handle text messages"""
+    if 'decoded' in packet and 'text' in packet['decoded']:
+        sender_id = packet['from']
+        message = packet['decoded']['text']
+        rssi = packet.get('rxRssi', 'N/A')
+        snr = packet.get('rxSnr', 'N/A')
+        
+        # Get timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if 'rxTime' in packet:
+            timestamp = datetime.fromtimestamp(packet['rxTime']).strftime("%Y-%m-%d %H:%M:%S")
+        
+        sender_name = get_node_name(sender_id, interface)
+        battery_info = get_battery_info(sender_id)
+        
+        # Get GPS position
+        latitude = None
+        longitude = None
+        altitude = None
+        
+        if sender_id in interface.nodes:
+            node = interface.nodes[sender_id]
+            if 'position' in node:
+                pos = node['position']
+                if 'latitude' in pos and 'longitude' in pos:
+                    latitude = pos['latitude']
+                    longitude = pos['longitude']
+                if 'altitude' in pos:
+                    altitude = pos['altitude']
+        
+        # Format GPS information
+        coords = format_coordinates(latitude, longitude)
+        location_info = coords if coords != "N/A" else "N/A"
+        altitude_info = f"{altitude}m" if altitude else "N/A"
+        
+        print(f"\n{'='*60}")
+        print(f"📨 MESSAGE [{timestamp}]")
+        print(f"From: {sender_name}")
+        print(f"{message}")
+        print(f"RSSI: {rssi} dBm | SNR: {snr} dB | Battery: {battery_info}")
+        
+        if coords != "N/A":
+            maps_link = get_google_maps_link(latitude, longitude)
+            if maps_link:
+                print(f"Map: {maps_link}")
+        
+        print(f"{'='*60}\n")
+        sys.stdout.flush()
+        
+        # Send to cloud
+        if CLOUD_MODE:
+            send_to_cloud({
+                'type': 'message',
+                'data': {
+                    'type': 'message',
+                    'timestamp': timestamp,
+                    'from': sender_name,
+                    'message': message,
+                    'location': coords if coords != "N/A" else None,
+                    'altitude': altitude_info if altitude_info != "N/A" else None,
+                    'rssi': str(rssi) if rssi != 'N/A' else None,
+                    'snr': str(snr) if snr != 'N/A' else None,
+                    'battery': battery_info if battery_info != "N/A" else None,
+                    'mapLink': get_google_maps_link(latitude, longitude) if coords != "N/A" else None
+                }
+            })
 
-io.on('connection', (socket) => {
-    if (connectedClients.size >= MAX_CLIENTS) {
-        console.log('Max clients reached, rejecting connection');
-        socket.disconnect();
-        return;
-    }
-    
-    connectedClients.add(socket.id);
-    console.log(`Client connected: ${socket.id} (${connectedClients.size} total)`);
-    
-    const enrichedMessages = recentMessages.map(msg => {
-        if (nodeTelemetry.has(msg.from) && (!msg.battery || msg.battery === 'N/A')) {
-            return { ...msg, battery: nodeTelemetry.get(msg.from).battery };
-        }
-        return msg;
-    });
-    
-    const enrichedPositions = Array.from(nodePositions.values()).map(pos => {
-        if (nodeTelemetry.has(pos.from) && (!pos.battery || pos.battery === 'N/A')) {
-            return { ...pos, battery: nodeTelemetry.get(pos.from).battery };
-        }
-        return pos;
-    });
-    
-    socket.emit('initial-data', {
-        messages: enrichedMessages,
-        positions: enrichedPositions
-    });
-    
-    console.log(`Sent initial data: ${enrichedMessages.length} messages, ${enrichedPositions.length} positions`);
-    
-    socket.on('disconnect', () => {
-        connectedClients.delete(socket.id);
-        console.log(`Client disconnected: ${socket.id} (${connectedClients.size} total)`);
-    });
-});
+def onPosition(packet, interface):
+    """Handle position updates"""
+    if 'decoded' in packet and 'position' in packet['decoded']:
+        sender_id = packet['from']
+        position = packet['decoded']['position']
+        
+        latitude = position.get('latitude')
+        longitude = position.get('longitude')
+        altitude = position.get('altitude')
+        
+        # Skip if no valid coordinates
+        if not latitude or not longitude:
+            return
+        
+        rssi = packet.get('rxRssi', 'N/A')
+        snr = packet.get('rxSnr', 'N/A')
+        
+        # Get timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if 'rxTime' in packet:
+            timestamp = datetime.fromtimestamp(packet['rxTime']).strftime("%Y-%m-%d %H:%M:%S")
+        
+        sender_name = get_node_name(sender_id, interface)
+        battery_info = get_battery_info(sender_id)
+        
+        # Format GPS information
+        coords = format_coordinates(latitude, longitude)
+        altitude_info = f"{altitude}m" if altitude else "N/A"
+        
+        print(f"\n{'='*60}")
+        print(f"📍 POSITION UPDATE [{timestamp}]")
+        print(f"From: {sender_name}")
+        print(f"Location: {coords} | Altitude: {altitude_info}")
+        print(f"RSSI: {rssi} dBm | SNR: {snr} dB | Battery: {battery_info}")
+        
+        maps_link = get_google_maps_link(latitude, longitude)
+        if maps_link:
+            print(f"Map: {maps_link}")
+        
+        print(f"{'='*60}\n")
+        sys.stdout.flush()
+        
+        # Send to cloud
+        if CLOUD_MODE:
+            send_to_cloud({
+                'type': 'position',
+                'data': {
+                    'type': 'position',
+                    'timestamp': timestamp,
+                    'from': sender_name,
+                    'location': coords,
+                    'altitude': altitude_info,
+                    'rssi': str(rssi) if rssi != 'N/A' else None,
+                    'snr': str(snr) if snr != 'N/A' else None,
+                    'battery': battery_info if battery_info != "N/A" else None,
+                    'mapLink': maps_link
+                }
+            })
 
-// Start Python listener only if enabled (local mode)
-let pythonProcess = null;
-if (process.env.ENABLE_PYTHON_LISTENER === 'true') {
-    console.log('Starting local Python listener...');
-    pythonProcess = spawn('python3', ['-u', 'meshtastic_listener.py']);
+# Connect
+print("Connecting to Meshtastic device...")
+if CLOUD_MODE:
+    print(f"☁️  Cloud mode enabled - will forward to {SERVER_URL}")
+else:
+    print("🏠 Local mode - no cloud forwarding")
+sys.stdout.flush()
 
-    pythonProcess.stdout.on('data', (data) => {
-        console.log(data.toString());
-        parsePythonOutput(data);
-    });
+interface = meshtastic.serial_interface.SerialInterface('/dev/ttyUSB0')
 
-    pythonProcess.stderr.on('data', (data) => {
-        console.error(`Python Error: ${data}`);
-    });
+# Subscribe to messages, position updates, and telemetry
+pub.subscribe(onReceive, "meshtastic.receive.text")
+pub.subscribe(onPosition, "meshtastic.receive.position")
+pub.subscribe(onTelemetry, "meshtastic.receive.telemetry")
 
-    pythonProcess.on('close', (code) => {
-        console.log(`Python process exited with code ${code}`);
-    });
-} else {
-    console.log('═══════════════════════════════════════════');
-    console.log('Running in CLOUD MODE');
-    console.log('Waiting for data from Raspberry Pi...');
-    console.log('═══════════════════════════════════════════');
-}
+# Start cloud sender thread if in cloud mode
+if CLOUD_MODE:
+    sender_thread = Thread(target=cloud_sender_thread, daemon=True)
+    sender_thread.start()
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'ok', 
-        uptime: process.uptime(),
-        connections: connectedClients.size,
-        mode: process.env.ENABLE_PYTHON_LISTENER === 'true' ? 'local' : 'cloud',
-        messages: recentMessages.length,
-        positions: nodePositions.size,
-        nodes: Array.from(nodePositions.keys())
-    });
-});
+print("Listening for messages, position updates, and telemetry...\n")
+sys.stdout.flush()
 
-// API endpoint to receive data from Raspberry Pi
-app.post('/api/message', (req, res) => {
-    console.log('Received POST to /api/message');
-    const { type, data } = req.body;
-    
-    if (!type || !data) {
-        console.error('Missing type or data in request');
-        return res.status(400).json({ error: 'Missing type or data' });
-    }
-    
-    console.log(`Processing ${type} packet from ${data.from}`);
-    processPacket(data);
-    
-    res.json({ success: true, message: 'Data received and broadcast' });
-});
-
-// Batch endpoint for multiple messages
-app.post('/api/messages/batch', (req, res) => {
-    console.log('Received batch POST to /api/messages/batch');
-    const { messages } = req.body;
-    
-    if (!Array.isArray(messages)) {
-        return res.status(400).json({ error: 'Messages must be an array' });
-    }
-    
-    let processed = 0;
-    for (const msg of messages) {
-        if (msg.type && msg.data) {
-            processPacket(msg.data);
-            processed++;
-        }
-    }
-    
-    console.log(`✓ Processed ${processed} messages in batch`);
-    res.json({ success: true, processed });
-});
-
-// Debug endpoint (remove in production)
-app.get('/api/debug', (req, res) => {
-    res.json({
-        messages: recentMessages,
-        positions: Array.from(nodePositions.entries()),
-        telemetry: Array.from(nodeTelemetry.entries()),
-        clients: connectedClients.size
-    });
-});
-
-// Start server
-server.listen(PORT, '0.0.0.0', () => {
-    console.log('═══════════════════════════════════════════');
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Mode: ${process.env.ENABLE_PYTHON_LISTENER === 'true' ? 'LOCAL' : 'CLOUD'}`);
-    console.log(`Health: http://0.0.0.0:${PORT}/health`);
-    console.log(`API: http://0.0.0.0:${PORT}/api/message`);
-    console.log('═══════════════════════════════════════════');
-});
-
-// Cleanup
-process.on('SIGINT', () => {
-    console.log('\nShutting down...');
-    if (pythonProcess) {
-        pythonProcess.kill();
-    }
-    server.close(() => {
-        console.log('Server closed');
-        process.exit();
-    });
-});
+try:
+    while True:
+        time.sleep(0.1)
+except KeyboardInterrupt:
+    print("\nStopping...")
+    interface.close()
