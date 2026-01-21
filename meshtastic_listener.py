@@ -1,534 +1,971 @@
-#!/usr/bin/env python3
-import meshtastic
-import meshtastic.serial_interface
-from pubsub import pub
-from datetime import datetime
-import time
-import sys
-import os
-import requests
-from threading import Thread
-from queue import Queue
-import hashlib
-
-# Force unbuffered output so Node.js can read it in real-time
-sys.stdout.reconfigure(line_buffering=True)
-sys.stderr.reconfigure(line_buffering=True)
-
-# Cloud server configuration
-SERVER_URL = os.getenv('SERVER_URL', None)
-CLOUD_MODE = SERVER_URL is not None
-
-# Message queue for batch sending
-message_queue = Queue()
-BATCH_SIZE = 5
-BATCH_TIMEOUT = 3  # seconds
-
-# Custom node name mapping - THESE TAKE PRIORITY OVER DEVICE NAMES
-NODE_NAMES = {
-    0x33687054: "Not working",
-    0x336879dc: "Node Echo",
-    0x9e7595c4: "Node Charlie",
-    0x9e755a5c: "Node Alpha",
-    0x9e76074c: "Node Foxtrot",
-    0x9e75877c: "Node Delta",
-    0xdb58af14: "Node Bravo"
-}
-
-# Print the node mapping on startup for verification
-print("\n" + "="*60)
-print("NODE MAPPING LOADED:")
-for node_id, name in NODE_NAMES.items():
-    print(f"  0x{node_id:08x} -> {name}")
-print("="*60 + "\n")
-sys.stdout.flush()
-
-# Store telemetry data for each node
-node_telemetry = {}
-
-# Store message IDs to prevent duplicates
-seen_messages = set()
-seen_positions = {}  # Store last position per node
-MESSAGE_CACHE_SIZE = 1000  # Keep last 1000 message IDs
-
-# Store all messages with IDs for deletion
-stored_messages = []
-message_counter = 0
-
-def generate_message_id(packet, content_type):
-    """Generate unique ID for message/position to detect duplicates"""
-    # Create hash from packet data
-    if content_type == "message":
-        data = f"{packet.get('from')}_{packet['decoded'].get('text')}_{packet.get('rxTime', time.time())}"
-    elif content_type == "position":
-        pos = packet['decoded']['position']
-        data = f"{packet.get('from')}_{pos.get('latitude')}_{pos.get('longitude')}_{packet.get('rxTime', time.time())}"
-    else:
-        data = f"{packet.get('from')}_{content_type}_{packet.get('rxTime', time.time())}"
-    
-    return hashlib.md5(data.encode()).hexdigest()
-
-def is_duplicate_message(packet):
-    """Check if we've already seen this exact message"""
-    msg_id = generate_message_id(packet, "message")
-    
-    if msg_id in seen_messages:
-        return True
-    
-    seen_messages.add(msg_id)
-    
-    # Limit cache size
-    if len(seen_messages) > MESSAGE_CACHE_SIZE:
-        seen_messages.pop()
-    
-    return False
-
-def is_duplicate_position(packet):
-    """Check if this is a duplicate position update"""
-    sender_id = packet['from']
-    position = packet['decoded']['position']
-    
-    latitude = position.get('latitude')
-    longitude = position.get('longitude')
-    altitude = position.get('altitude')
-    
-    # Create position signature
-    pos_sig = f"{latitude:.6f}_{longitude:.6f}_{altitude}"
-    
-    # Check if we've seen this exact position from this node
-    if sender_id in seen_positions:
-        if seen_positions[sender_id] == pos_sig:
-            return True
-    
-    # Store this position
-    seen_positions[sender_id] = pos_sig
-    return False
-
-def delete_message(message_id):
-    """Delete a message by ID"""
-    global stored_messages
-    
-    initial_count = len(stored_messages)
-    stored_messages = [msg for msg in stored_messages if msg['id'] != message_id]
-    
-    deleted = initial_count - len(stored_messages)
-    
-    if deleted > 0:
-        print(f"🗑️  Deleted message ID: {message_id}")
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meshtastic Monitor</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
         
-        # Send delete command to cloud
-        if CLOUD_MODE:
-            try:
-                response = requests.post(
-                    f"{SERVER_URL}/api/messages/delete",
-                    json={'messageId': message_id},
-                    timeout=5
-                )
-                if response.status_code == 200:
-                    print(f"☁️  ✓ Message deleted from cloud")
-                else:
-                    print(f"☁️  ✗ Failed to delete from cloud: {response.status_code}")
-            except Exception as e:
-                print(f"☁️  ✗ Cloud delete error: {e}")
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            height: 100vh;
+            overflow: hidden;
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
         
-        sys.stdout.flush()
-        return True
-    else:
-        print(f"❌ Message ID {message_id} not found")
-        sys.stdout.flush()
-        return False
-
-def clear_all_messages():
-    """Clear all stored messages"""
-    global stored_messages, seen_messages, seen_positions
-    
-    count = len(stored_messages)
-    stored_messages.clear()
-    seen_messages.clear()
-    seen_positions.clear()
-    
-    print(f"🗑️  Cleared {count} messages from local storage")
-    
-    # Send clear command to cloud
-    if CLOUD_MODE:
-        try:
-            response = requests.post(
-                f"{SERVER_URL}/api/messages/clear",
-                timeout=5
-            )
-            if response.status_code == 200:
-                print(f"☁️  ✓ All messages cleared from cloud")
-            else:
-                print(f"☁️  ✗ Failed to clear cloud: {response.status_code}")
-        except Exception as e:
-            print(f"☁️  ✗ Cloud clear error: {e}")
-    
-    sys.stdout.flush()
-
-def format_coordinates(latitude, longitude):
-    """Format coordinates for Google Maps"""
-    if latitude and longitude:
-        return f"{latitude:.6f}, {longitude:.6f}"
-    return "N/A"
-
-def get_google_maps_link(latitude, longitude):
-    """Generate Google Maps link"""
-    if latitude and longitude:
-        return f"https://maps.google.com/?q={latitude},{longitude}"
-    return None
-
-def get_node_name(sender_id, interface):
-    """Get node name - CUSTOM MAPPING TAKES PRIORITY"""
-    # ALWAYS check custom mapping FIRST
-    if sender_id in NODE_NAMES:
-        return NODE_NAMES[sender_id]
-    
-    # Only if not in custom mapping, try to get name from device info
-    if sender_id in interface.nodes:
-        node = interface.nodes[sender_id]
-        if 'user' in node and 'longName' in node['user']:
-            return node['user']['longName']
-        elif 'user' in node and 'shortName' in node['user']:
-            return node['user']['shortName']
-    
-    # Fallback to hex ID if not found anywhere
-    return f"0x{sender_id:08x}"
-
-def get_battery_info(sender_id):
-    """Get battery information for a node from cached telemetry"""
-    if sender_id in node_telemetry:
-        telemetry = node_telemetry[sender_id]
-        voltage = telemetry.get('voltage')
-        battery_level = telemetry.get('batteryLevel')
+        /* Dark mode (default) */
+        body.dark-mode {
+            background: #1a1a2e;
+            color: #eee;
+        }
         
-        if voltage and battery_level is not None:
-            return f"{voltage:.2f}V ({battery_level}%)"
-        elif voltage:
-            return f"{voltage:.2f}V"
-        elif battery_level is not None:
-            return f"{battery_level}%"
+        body.dark-mode header {
+            background: #16213e;
+        }
+        
+        body.dark-mode .nodes-status {
+            background: #0f3460;
+        }
+        
+        body.dark-mode .node-badge {
+            background: #1a1a2e;
+        }
+        
+        body.dark-mode .sidebar {
+            background: #16213e;
+        }
+        
+        body.dark-mode .sidebar-header {
+            background: #0f3460;
+        }
+        
+        body.dark-mode .message-card,
+        body.dark-mode .position-card {
+            background: #0f3460;
+        }
+        
+        body.dark-mode .location-entry {
+            background: #0f3460;
+        }
+        
+        body.dark-mode .message-meta {
+            border-top-color: #1a1a2e;
+        }
+        
+        body.dark-mode ::-webkit-scrollbar-track {
+            background: #1a1a2e;
+        }
+        
+        body.dark-mode .leaflet-popup-content-wrapper {
+            background: #16213e;
+            color: #eee;
+        }
+        
+        /* Light mode */
+        body.light-mode {
+            background: #f5f5f5;
+            color: #333;
+        }
+        
+        body.light-mode header {
+            background: #ffffff;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        body.light-mode h1 {
+            color: #0066cc !important;
+        }
+        
+        body.light-mode .nodes-status {
+            background: #e8f4f8;
+        }
+        
+        body.light-mode .node-count {
+            color: #0066cc !important;
+        }
+        
+        body.light-mode .node-badge {
+            background: #ffffff;
+            border-color: #0066cc !important;
+        }
+        
+        body.light-mode .sidebar {
+            background: #ffffff;
+        }
+        
+        body.light-mode .sidebar-header {
+            background: #e8f4f8;
+            color: #333;
+        }
+        
+        body.light-mode .message-card,
+        body.light-mode .position-card {
+            background: #f8f9fa;
+            border-left-color: #0066cc !important;
+        }
+        
+        body.light-mode .location-entry {
+            background: #f8f9fa;
+        }
+        
+        body.light-mode .message-from {
+            color: #0066cc !important;
+        }
+        
+        body.light-mode .message-header,
+        body.light-mode .message-meta {
+            color: #666;
+        }
+        
+        body.light-mode .location-header {
+            color: #666;
+        }
+        
+        body.light-mode .location-node {
+            color: #0066cc !important;
+        }
+        
+        body.light-mode .message-meta {
+            border-top-color: #e0e0e0;
+        }
+        
+        body.light-mode ::-webkit-scrollbar-track {
+            background: #f0f0f0;
+        }
+        
+        body.light-mode ::-webkit-scrollbar-thumb {
+            background: #0066cc;
+        }
+        
+        body.light-mode .leaflet-popup-content-wrapper {
+            background: #ffffff;
+            color: #333;
+        }
+        
+        body.light-mode .popup-title {
+            color: #0066cc !important;
+        }
+        
+        body.light-mode .section-title {
+            color: #0066cc;
+            border-bottom-color: #0066cc;
+        }
+        
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            grid-template-rows: 60px 1fr;
+            height: 100vh;
+        }
+        
+        header {
+            grid-column: 1 / -1;
+            padding: 15px 30px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            transition: background-color 0.3s ease;
+        }
+        
+        header h1 {
+            font-size: 24px;
+            color: #00d4ff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            transition: color 0.3s ease;
+        }
+        
+        .logo {
+            width: 40px;
+            height: 40px;
+            object-fit: contain;
+        }
+        
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        
+        .theme-toggle {
+            background: transparent;
+            border: 2px solid #00d4ff;
+            color: #00d4ff;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.3s ease;
+        }
+        
+        .theme-toggle:hover {
+            background: #00d4ff;
+            color: #1a1a2e;
+        }
+        
+        body.light-mode .theme-toggle {
+            border-color: #0066cc;
+            color: #0066cc;
+        }
+        
+        body.light-mode .theme-toggle:hover {
+            background: #0066cc;
+            color: #ffffff;
+        }
+        
+        .nodes-status {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 8px 16px;
+            border-radius: 8px;
+            transition: background-color 0.3s ease;
+        }
+        
+        .node-count {
+            font-size: 18px;
+            font-weight: bold;
+            color: #00d4ff;
+            transition: color 0.3s ease;
+        }
+        
+        .node-list {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        
+        .node-badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border: 1px solid #00d4ff;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .node-badge:hover {
+            opacity: 0.8;
+            transform: scale(1.05);
+        }
+        
+        .node-badge.hidden {
+            display: none;
+        }
+        
+        .node-badge.visible {
+            display: flex;
+        }
+        
+        .more-nodes {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            background: transparent;
+            border: 1px solid #00d4ff;
+            color: #00d4ff;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: bold;
+        }
+        
+        .more-nodes:hover {
+            background: #00d4ff;
+            color: #1a1a2e;
+        }
+        
+        body.light-mode .more-nodes {
+            border-color: #0066cc;
+            color: #0066cc;
+        }
+        
+        body.light-mode .more-nodes:hover {
+            background: #0066cc;
+            color: #ffffff;
+        }
+        
+        .node-battery {
+            color: #00ff00;
+            font-weight: bold;
+            font-size: 11px;
+        }
+        
+        .node-battery.low {
+            color: #ff6b6b;
+        }
+        
+        .node-battery.medium {
+            color: #ffd93d;
+        }
+        
+        .node-indicator {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #00ff00;
+        }
+        
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+        
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #00ff00;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        #map {
+            width: 100%;
+            height: 100%;
+        }
+        
+        /* Dark mode map styling - vibrant with bright roads */
+        body.dark-mode .map-tiles {
+            filter: brightness(0.6) invert(1) contrast(3.5) hue-rotate(200deg) saturate(1.5) brightness(0.85);
+        }
+        
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            transition: background-color 0.3s ease;
+        }
+        
+        .sidebar-header {
+            padding: 15px 20px;
+            font-size: 18px;
+            font-weight: bold;
+            border-bottom: 2px solid #00d4ff;
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+        
+        .combined-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+        }
+        
+        .section-title {
+            font-size: 14px;
+            font-weight: bold;
+            color: #00d4ff;
+            margin: 20px 0 10px 0;
+            padding-bottom: 5px;
+            border-bottom: 1px solid #00d4ff;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+        }
+        
+        .section-title:first-child {
+            margin-top: 0;
+        }
+        
+        .section-toggle {
+            font-size: 12px;
+            transition: transform 0.3s ease;
+        }
+        
+        .section-toggle.collapsed {
+            transform: rotate(-90deg);
+        }
+        
+        .section-content {
+            max-height: 10000px;
+            overflow: hidden;
+            transition: max-height 0.3s ease, opacity 0.3s ease;
+            opacity: 1;
+        }
+        
+        .section-content.collapsed {
+            max-height: 0;
+            opacity: 0;
+        }
+        
+        .message-card {
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 12px;
+            border-left: 4px solid #00d4ff;
+            animation: slideIn 0.3s ease;
+            transition: background-color 0.3s ease;
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        
+        .message-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 12px;
+            color: #aaa;
+            transition: color 0.3s ease;
+        }
+        
+        .message-from {
+            font-weight: bold;
+            color: #00d4ff;
+            transition: color 0.3s ease;
+        }
+        
+        .message-text {
+            margin: 8px 0;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+        
+        .message-meta {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+            font-size: 11px;
+            color: #888;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #1a1a2e;
+            transition: all 0.3s ease;
+        }
+        
+        .meta-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .location-entry {
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 12px;
+            border-left: 4px solid #4ecdc4;
+            transition: background-color 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .location-entry:hover {
+            opacity: 0.8;
+        }
+        
+        .location-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 12px;
+            color: #aaa;
+        }
+        
+        .location-node {
+            font-weight: bold;
+            color: #4ecdc4;
+        }
+        
+        .location-coords {
+            font-size: 13px;
+            margin: 4px 0;
+        }
+        
+        .location-meta {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            font-size: 11px;
+            color: #888;
+            margin-top: 8px;
+        }
+        
+        .position-card {
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 12px;
+            border-left: 4px solid #ff6b6b;
+            transition: background-color 0.3s ease;
+        }
+        
+        .leaflet-popup-content-wrapper {
+            transition: all 0.3s ease;
+        }
+        
+        .leaflet-popup-content {
+            margin: 10px;
+        }
+        
+        .popup-title {
+            font-weight: bold;
+            color: #00d4ff;
+            margin-bottom: 8px;
+            font-size: 16px;
+            transition: color 0.3s ease;
+        }
+        
+        .popup-info {
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        
+        .popup-info div {
+            margin: 4px 0;
+        }
+        
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            transition: background-color 0.3s ease;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #00d4ff;
+            border-radius: 4px;
+            transition: background-color 0.3s ease;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #00a8cc;
+        }
+    </style>
+</head>
+<body class="dark-mode">
+    <div class="container">
+        <header>
+            <h1>
+                <img src="meshtastic.png" alt="Meshtastic Logo" class="logo">
+                <span>Meshtastic Monitor</span>
+            </h1>
+            <div class="header-right">
+                <button class="theme-toggle" id="themeToggle">
+                    <span id="themeIcon">☀️</span>
+                    <span id="themeText">Light Mode</span>
+                </button>
+                <div class="nodes-status">
+                    <div class="node-count">
+                        <span id="nodeCount">0</span> Nodes
+                    </div>
+                    <div class="node-list" id="nodeList"></div>
+                </div>
+                <div class="status">
+                    <div class="status-dot"></div>
+                    <span>Connected</span>
+                </div>
+            </div>
+        </header>
+        
+        <div id="map"></div>
+        
+        <div class="sidebar">
+            <div class="sidebar-header">Activity Feed</div>
+            <div class="combined-content">
+                <div class="section-title" id="locationTitle">
+                    <span>📍 Location Logs</span>
+                    <span class="section-toggle">▼</span>
+                </div>
+                <div class="section-content" id="locationContent">
+                    <div id="locations-section"></div>
+                </div>
+                <div class="section-title" id="messageTitle">
+                    <span>💬 Messages</span>
+                    <span class="section-toggle">▼</span>
+                </div>
+                <div class="section-content" id="messageContent">
+                    <div id="messages-section"></div>
+                </div>
+            </div>
+        </div>
+    </div>
     
-    return "N/A"
-
-def send_to_cloud(packet_data):
-    """Send packet data to cloud server queue"""
-    if not CLOUD_MODE:
-        return
-    
-    try:
-        message_queue.put(packet_data)
-    except Exception as e:
-        print(f"Error queuing message: {e}")
-        sys.stdout.flush()
-
-def cloud_sender_thread():
-    """Background thread to send messages to cloud in batches"""
-    if not CLOUD_MODE:
-        return
-    
-    batch = []
-    last_send_time = time.time()
-    
-    print(f"☁️  Cloud sender started - forwarding to {SERVER_URL}")
-    sys.stdout.flush()
-    
-    while True:
-        try:
-            # Try to get a message with timeout
-            try:
-                msg = message_queue.get(timeout=1)
-                batch.append(msg)
-            except:
-                pass
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <script>
+        const socket = io();
+        
+        // Theme toggle functionality
+        const themeToggle = document.getElementById('themeToggle');
+        const themeIcon = document.getElementById('themeIcon');
+        const themeText = document.getElementById('themeText');
+        const body = document.body;
+        
+        // Load saved theme from localStorage
+        const savedTheme = localStorage.getItem('theme') || 'dark-mode';
+        body.className = savedTheme;
+        updateThemeButton();
+        
+        themeToggle.addEventListener('click', () => {
+            if (body.classList.contains('dark-mode')) {
+                body.classList.remove('dark-mode');
+                body.classList.add('light-mode');
+                localStorage.setItem('theme', 'light-mode');
+            } else {
+                body.classList.remove('light-mode');
+                body.classList.add('dark-mode');
+                localStorage.setItem('theme', 'dark-mode');
+            }
+            updateThemeButton();
+        });
+        
+        function updateThemeButton() {
+            if (body.classList.contains('dark-mode')) {
+                themeIcon.textContent = '☀️';
+                themeText.textContent = 'Light Mode';
+            } else {
+                themeIcon.textContent = '🌙';
+                themeText.textContent = 'Dark Mode';
+            }
+        }
+        
+        // Initialize map
+        const map = L.map('map').setView([1.3521, 103.8198], 11);
+        
+        // Single tile layer with className for CSS filtering
+        const tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors',
+            maxZoom: 19,
+            className: 'map-tiles'
+        }).addTo(map);
+        
+        const markers = new Map();
+        const messagesContainer = document.getElementById('messages-section');
+        const locationsContainer = document.getElementById('locations-section');
+        const nodeListContainer = document.getElementById('nodeList');
+        const nodeCountElement = document.getElementById('nodeCount');
+        const onlineNodes = new Map();
+        const locationHistory = [];
+        
+        const MAX_VISIBLE_NODES = 4;
+        let showAllNodes = false;
+        
+        // Section toggle functionality
+        const locationTitle = document.getElementById('locationTitle');
+        const locationContent = document.getElementById('locationContent');
+        const messageTitle = document.getElementById('messageTitle');
+        const messageContent = document.getElementById('messageContent');
+        
+        locationTitle.addEventListener('click', () => {
+            const toggle = locationTitle.querySelector('.section-toggle');
+            locationContent.classList.toggle('collapsed');
+            toggle.classList.toggle('collapsed');
+        });
+        
+        messageTitle.addEventListener('click', () => {
+            const toggle = messageTitle.querySelector('.section-toggle');
+            messageContent.classList.toggle('collapsed');
+            toggle.classList.toggle('collapsed');
+        });
+        
+        const nodeColors = [
+            '#00d4ff', '#ff6b6b', '#4ecdc4', '#ffd93d', '#a8e6cf',
+            '#ff8b94', '#c7ceea', '#ffa07a', '#98d8c8', '#f7b731',
+            '#5f27cd', '#00b894', '#fdcb6e', '#e84393', '#74b9ff'
+        ];
+        
+        const nodeColorMap = new Map();
+        let colorIndex = 0;
+        
+        function getNodeColor(nodeName) {
+            if (!nodeColorMap.has(nodeName)) {
+                nodeColorMap.set(nodeName, nodeColors[colorIndex % nodeColors.length]);
+                colorIndex++;
+            }
+            return nodeColorMap.get(nodeName);
+        }
+        
+        function updateNodeList() {
+            nodeCountElement.textContent = onlineNodes.size;
+            nodeListContainer.innerHTML = '';
             
-            current_time = time.time()
-            should_send = (
-                len(batch) >= BATCH_SIZE or 
-                (len(batch) > 0 and (current_time - last_send_time) >= BATCH_TIMEOUT)
-            )
+            const nodeArray = Array.from(onlineNodes.entries());
+            const visibleCount = showAllNodes ? nodeArray.length : Math.min(MAX_VISIBLE_NODES, nodeArray.length);
+            const hasMoreNodes = nodeArray.length > MAX_VISIBLE_NODES;
             
-            if should_send and batch:
-                try:
-                    response = requests.post(
-                        f"{SERVER_URL}/api/messages/batch",
-                        json={'messages': batch},
-                        timeout=10
-                    )
-                    if response.status_code == 200:
-                        print(f"☁️  ✓ Sent {len(batch)} messages to cloud")
-                    else:
-                        print(f"☁️  ✗ Cloud returned {response.status_code}")
-                    sys.stdout.flush()
-                except requests.exceptions.RequestException as e:
-                    print(f"☁️  ✗ Failed to send to cloud: {e}")
-                    sys.stdout.flush()
+            nodeArray.forEach(([nodeName, nodeData], index) => {
+                const badge = document.createElement('div');
+                badge.className = 'node-badge';
+                const nodeColor = getNodeColor(nodeName);
+                badge.style.borderColor = nodeColor;
                 
-                batch.clear()
-                last_send_time = current_time
+                // Show first MAX_VISIBLE_NODES or all if expanded
+                if (index >= visibleCount) {
+                    badge.classList.add('hidden');
+                } else {
+                    badge.classList.add('visible');
+                }
                 
-        except Exception as e:
-            print(f"Cloud sender error: {e}")
-            sys.stdout.flush()
-            time.sleep(1)
-
-def onTelemetry(packet, interface):
-    """Handle telemetry updates (battery, voltage, etc.)"""
-    if 'decoded' in packet and 'telemetry' in packet['decoded']:
-        sender_id = packet['from']
-        sender_name = get_node_name(sender_id, interface)
-        
-        telemetry = packet['decoded']['telemetry']
-        
-        # Check for device metrics (battery, voltage, etc.)
-        if 'deviceMetrics' in telemetry:
-            metrics = telemetry['deviceMetrics']
+                let batteryClass = '';
+                let batteryText = '';
+                if (nodeData.battery && nodeData.battery !== 'N/A') {
+                    batteryText = nodeData.battery;
+                    const percentMatch = nodeData.battery.match(/(\d+)%/);
+                    if (percentMatch) {
+                        const percent = parseInt(percentMatch[1]);
+                        if (percent <= 20) batteryClass = 'low';
+                        else if (percent <= 50) batteryClass = 'medium';
+                    }
+                }
+                
+                badge.innerHTML = `
+                    <div class="node-indicator" style="background: ${nodeColor};"></div>
+                    <span>${nodeName}</span>
+                    ${batteryText ? `<span class="node-battery ${batteryClass}">🔋 ${batteryText}</span>` : ''}
+                `;
+                
+                // Add click handler to zoom to node location
+                badge.addEventListener('click', () => {
+                    if (markers.has(nodeName)) {
+                        const marker = markers.get(nodeName);
+                        const latLng = marker.getLatLng();
+                        map.setView(latLng, 16);
+                        marker.openPopup();
+                    }
+                });
+                
+                nodeListContainer.appendChild(badge);
+            });
             
-            # Store telemetry data for this node
-            node_telemetry[sender_id] = {
-                'batteryLevel': metrics.get('batteryLevel'),
-                'voltage': metrics.get('voltage'),
-                'channelUtilization': metrics.get('channelUtilization'),
-                'airUtilTx': metrics.get('airUtilTx'),
-                'uptimeSeconds': metrics.get('uptimeSeconds'),
-                'timestamp': datetime.now()
+            // Add "..." button if there are more nodes
+            if (hasMoreNodes && !showAllNodes) {
+                const moreButton = document.createElement('button');
+                moreButton.className = 'more-nodes';
+                moreButton.textContent = '...';
+                moreButton.addEventListener('click', () => {
+                    showAllNodes = true;
+                    updateNodeList();
+                });
+                nodeListContainer.appendChild(moreButton);
+            } else if (hasMoreNodes && showAllNodes) {
+                const lessButton = document.createElement('button');
+                lessButton.className = 'more-nodes';
+                lessButton.textContent = '−';
+                lessButton.title = 'Show less';
+                lessButton.addEventListener('click', () => {
+                    showAllNodes = false;
+                    updateNodeList();
+                });
+                nodeListContainer.appendChild(lessButton);
+            }
+        }
+        
+        function createNodeIcon(nodeName) {
+            const color = getNodeColor(nodeName);
+            return L.divIcon({
+                className: 'custom-marker',
+                html: `<div style="background: ${color}; width: 20px; height: 20px; border-radius: 50%; border: 3px solid white; box-shadow: 0 0 10px ${color}80;"></div>`,
+                iconSize: [20, 20],
+                iconAnchor: [10, 10]
+            });
+        }
+        
+        function addMessage(msg) {
+            const messageEl = document.createElement('div');
+            messageEl.className = 'message-card';
+            const nodeColor = msg.from ? getNodeColor(msg.from) : '#00d4ff';
+            messageEl.style.borderLeftColor = nodeColor;
+            
+            const time = new Date(msg.timestamp).toLocaleTimeString();
+            
+            if (msg.from) {
+                onlineNodes.set(msg.from, { 
+                    lastSeen: new Date(msg.timestamp),
+                    battery: msg.battery
+                });
+                updateNodeList();
             }
             
-            battery_level = metrics.get('batteryLevel', 'N/A')
-            voltage = metrics.get('voltage', 'N/A')
-            channel_util = metrics.get('channelUtilization', 'N/A')
-            air_util = metrics.get('airUtilTx', 'N/A')
-            uptime = metrics.get('uptimeSeconds', 'N/A')
+            messageEl.innerHTML = `
+                <div class="message-header">
+                    <span class="message-from" style="color: ${nodeColor};">${msg.from || 'Unknown'}</span>
+                    <span>${time}</span>
+                </div>
+                <div class="message-text">${msg.message || ''}</div>
+                <div class="message-meta">
+                    ${msg.rssi && msg.rssi !== 'N/A' ? `<div class="meta-item">📡 RSSI: ${msg.rssi} dBm</div>` : ''}
+                    ${msg.snr && msg.snr !== 'N/A' ? `<div class="meta-item">📶 SNR: ${msg.snr} dB</div>` : ''}
+                    ${msg.battery && msg.battery !== 'N/A' ? `<div class="meta-item">🔋 ${msg.battery}</div>` : ''}
+                    ${msg.location ? `<div class="meta-item">📍 ${msg.location}</div>` : ''}
+                </div>
+            `;
             
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            messagesContainer.insertBefore(messageEl, messagesContainer.firstChild);
             
-            # Only skip printing if it's an unknown node (hex ID format)
-            if not sender_name.startswith("0x"):
-                print(f"\n{'='*60}")
-                print(f"📊 TELEMETRY [{timestamp}]")
-                print(f"From: {sender_name}")
-                print(f"Battery: {battery_level}% | Voltage: {voltage}V")
-                print(f"Channel Util: {channel_util}% | Air Util TX: {air_util}%")
-                if uptime != 'N/A':
-                    uptime_hours = uptime / 3600
-                    print(f"Uptime: {uptime_hours:.1f} hours")
-                print(f"{'='*60}\n")
-                sys.stdout.flush()
+            while (messagesContainer.children.length > 50) {
+                messagesContainer.removeChild(messagesContainer.lastChild);
+            }
+        }
+        
+        function addLocationLog(pos) {
+            locationHistory.unshift(pos);
             
-            # Send to cloud
-            if CLOUD_MODE:
-                send_to_cloud({
-                    'type': 'telemetry',
-                    'data': {
-                        'type': 'telemetry',
-                        'timestamp': timestamp,
-                        'from': sender_name,
-                        'battery': f"{battery_level}%" if battery_level != 'N/A' else None,
-                        'voltage': f"{voltage}V" if voltage != 'N/A' else None,
-                        'channelUtil': str(channel_util) if channel_util != 'N/A' else None,
-                        'airUtil': str(air_util) if air_util != 'N/A' else None,
-                        'uptime': str(uptime / 3600) if uptime != 'N/A' else None
-                    }
-                })
-
-def onReceive(packet, interface):
-    """Handle text messages"""
-    global message_counter, stored_messages
-    
-    if 'decoded' in packet and 'text' in packet['decoded']:
-        # Check for duplicates first
-        if is_duplicate_message(packet):
-            return  # Skip duplicate message
-        
-        sender_id = packet['from']
-        message = packet['decoded']['text']
-        rssi = packet.get('rxRssi', 'N/A')
-        snr = packet.get('rxSnr', 'N/A')
-        
-        # Get timestamp
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if 'rxTime' in packet:
-            timestamp = datetime.fromtimestamp(packet['rxTime']).strftime("%Y-%m-%d %H:%M:%S")
-        
-        sender_name = get_node_name(sender_id, interface)
-        battery_info = get_battery_info(sender_id)
-        
-        # Get GPS position
-        latitude = None
-        longitude = None
-        altitude = None
-        
-        if sender_id in interface.nodes:
-            node = interface.nodes[sender_id]
-            if 'position' in node:
-                pos = node['position']
-                if 'latitude' in pos and 'longitude' in pos:
-                    latitude = pos['latitude']
-                    longitude = pos['longitude']
-                if 'altitude' in pos:
-                    altitude = pos['altitude']
-        
-        # Format GPS information
-        coords = format_coordinates(latitude, longitude)
-        location_info = coords if coords != "N/A" else "N/A"
-        altitude_info = f"{altitude}m" if altitude else "N/A"
-        
-        # Generate message ID
-        message_counter += 1
-        msg_id = f"msg_{message_counter}_{int(time.time())}"
-        
-        print(f"\n{'='*60}")
-        print(f"📨 MESSAGE [ID: {msg_id}] [{timestamp}]")
-        print(f"From: {sender_name}")
-        print(f"{message}")
-        print(f"RSSI: {rssi} dBm | SNR: {snr} dB | Battery: {battery_info}")
-        
-        if coords != "N/A":
-            maps_link = get_google_maps_link(latitude, longitude)
-            if maps_link:
-                print(f"Map: {maps_link}")
-        
-        print(f"{'='*60}\n")
-        sys.stdout.flush()
-        
-        # Store message locally
-        stored_messages.append({
-            'id': msg_id,
-            'type': 'message',
-            'timestamp': timestamp,
-            'from': sender_name,
-            'message': message
-        })
-        
-        # Send to cloud
-        if CLOUD_MODE:
-            send_to_cloud({
-                'type': 'message',
-                'data': {
-                    'id': msg_id,
-                    'type': 'message',
-                    'timestamp': timestamp,
-                    'from': sender_name,
-                    'message': message,
-                    'location': coords if coords != "N/A" else None,
-                    'altitude': altitude_info if altitude_info != "N/A" else None,
-                    'rssi': str(rssi) if rssi != 'N/A' else None,
-                    'snr': str(snr) if snr != 'N/A' else None,
-                    'battery': battery_info if battery_info != "N/A" else None,
-                    'mapLink': get_google_maps_link(latitude, longitude) if coords != "N/A" else None
+            // Keep only last 100 location entries
+            if (locationHistory.length > 100) {
+                locationHistory.pop();
+            }
+            
+            const locationEl = document.createElement('div');
+            locationEl.className = 'location-entry';
+            const nodeColor = getNodeColor(pos.from);
+            locationEl.style.borderLeftColor = nodeColor;
+            
+            const time = new Date(pos.timestamp).toLocaleString();
+            
+            locationEl.innerHTML = `
+                <div class="location-header">
+                    <span class="location-node" style="color: ${nodeColor};">${pos.from || 'Unknown'}</span>
+                    <span>${time}</span>
+                </div>
+                <div class="location-coords">📍 ${pos.lat.toFixed(6)}, ${pos.lng.toFixed(6)}</div>
+                <div class="location-meta">
+                    ${pos.altitude ? `<span>⛰️ ${pos.altitude}</span>` : ''}
+                    ${pos.battery && pos.battery !== 'N/A' ? `<span>🔋 ${pos.battery}</span>` : ''}
+                    ${pos.rssi && pos.rssi !== 'N/A' ? `<span>📡 ${pos.rssi} dBm</span>` : ''}
+                    ${pos.snr && pos.snr !== 'N/A' ? `<span>📶 ${pos.snr} dB</span>` : ''}
+                </div>
+            `;
+            
+            // Click to zoom to location on map
+            locationEl.addEventListener('click', () => {
+                map.setView([pos.lat, pos.lng], 16);
+                if (markers.has(pos.from)) {
+                    markers.get(pos.from).openPopup();
                 }
-            })
-
-def onPosition(packet, interface):
-    """Handle position updates"""
-    global message_counter, stored_messages
-    
-    if 'decoded' in packet and 'position' in packet['decoded']:
-        # Check for duplicates first
-        if is_duplicate_position(packet):
-            return  # Skip duplicate position
+            });
+            
+            locationsContainer.insertBefore(locationEl, locationsContainer.firstChild);
+            
+            // Keep only 100 displayed entries
+            while (locationsContainer.children.length > 100) {
+                locationsContainer.removeChild(locationsContainer.lastChild);
+            }
+        }
         
-        sender_id = packet['from']
-        position = packet['decoded']['position']
+        function updatePosition(pos) {
+            if (pos.from) {
+                onlineNodes.set(pos.from, { 
+                    lastSeen: new Date(pos.timestamp),
+                    battery: pos.battery
+                });
+                updateNodeList();
+            }
+            
+            // Add to location log
+            addLocationLog(pos);
+            
+            const nodeColor = getNodeColor(pos.from);
+            
+            const popupContent = `
+                <div class="popup-title" style="color: ${nodeColor};">${pos.from || 'Unknown Node'}</div>
+                <div class="popup-info">
+                    <div>📍 ${pos.lat.toFixed(6)}, ${pos.lng.toFixed(6)}</div>
+                    ${pos.altitude ? `<div>⛰️ Altitude: ${pos.altitude}</div>` : ''}
+                    ${pos.battery && pos.battery !== 'N/A' ? `<div>🔋 Battery: ${pos.battery}</div>` : ''}
+                    ${pos.rssi && pos.rssi !== 'N/A' ? `<div>📡 RSSI: ${pos.rssi} dBm</div>` : ''}
+                    ${pos.snr && pos.snr !== 'N/A' ? `<div>📶 SNR: ${pos.snr} dB</div>` : ''}
+                    <div>🕐 ${new Date(pos.timestamp).toLocaleString()}</div>
+                </div>
+            `;
+            
+            if (markers.has(pos.from)) {
+                const marker = markers.get(pos.from);
+                marker.setLatLng([pos.lat, pos.lng]);
+                marker.setPopupContent(popupContent);
+            } else {
+                const marker = L.marker([pos.lat, pos.lng], { icon: createNodeIcon(pos.from) })
+                    .addTo(map)
+                    .bindPopup(popupContent);
+                markers.set(pos.from, marker);
+            }
+            
+            if (markers.size === 1) {
+                map.setView([pos.lat, pos.lng], 13);
+            }
+        }
         
-        latitude = position.get('latitude')
-        longitude = position.get('longitude')
-        altitude = position.get('altitude')
+        socket.on('initial-data', (data) => {
+            data.messages.forEach(msg => addMessage(msg));
+            data.positions.forEach(pos => updatePosition(pos));
+            
+            if (markers.size > 0) {
+                const bounds = L.latLngBounds(Array.from(markers.values()).map(m => m.getLatLng()));
+                map.fitBounds(bounds, { padding: [50, 50] });
+            }
+        });
         
-        # Skip if no valid coordinates
-        if not latitude or not longitude:
-            return
+        socket.on('new-message', (msg) => {
+            addMessage(msg);
+        });
         
-        rssi = packet.get('rxRssi', 'N/A')
-        snr = packet.get('rxSnr', 'N/A')
+        socket.on('position-update', (pos) => {
+            updatePosition(pos);
+        });
         
-        # Get timestamp
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if 'rxTime' in packet:
-            timestamp = datetime.fromtimestamp(packet['rxTime']).strftime("%Y-%m-%d %H:%M:%S")
+        socket.on('disconnect', () => {
+            document.querySelector('.status-dot').style.background = '#ff0000';
+            document.querySelector('.status span').textContent = 'Disconnected';
+        });
         
-        sender_name = get_node_name(sender_id, interface)
-        battery_info = get_battery_info(sender_id)
+        socket.on('connect', () => {
+            document.querySelector('.status-dot').style.background = '#00ff00';
+            document.querySelector('.status span').textContent = 'Connected';
+        });
         
-        # Format GPS information
-        coords = format_coordinates(latitude, longitude)
-        altitude_info = f"{altitude}m" if altitude else "N/A"
-        
-        # Generate message ID
-        message_counter += 1
-        msg_id = f"pos_{message_counter}_{int(time.time())}"
-        
-        print(f"\n{'='*60}")
-        print(f"📍 POSITION UPDATE [ID: {msg_id}] [{timestamp}]")
-        print(f"From: {sender_name}")
-        print(f"Location: {coords} | Altitude: {altitude_info}")
-        print(f"RSSI: {rssi} dBm | SNR: {snr} dB | Battery: {battery_info}")
-        
-        maps_link = get_google_maps_link(latitude, longitude)
-        if maps_link:
-            print(f"Map: {maps_link}")
-        
-        print(f"{'='*60}\n")
-        sys.stdout.flush()
-        
-        # Store message locally
-        stored_messages.append({
-            'id': msg_id,
-            'type': 'position',
-            'timestamp': timestamp,
-            'from': sender_name,
-            'location': coords
-        })
-        
-        # Send to cloud
-        if CLOUD_MODE:
-            send_to_cloud({
-                'type': 'position',
-                'data': {
-                    'id': msg_id,
-                    'type': 'position',
-                    'timestamp': timestamp,
-                    'from': sender_name,
-                    'location': coords,
-                    'altitude': altitude_info,
-                    'rssi': str(rssi) if rssi != 'N/A' else None,
-                    'snr': str(snr) if snr != 'N/A' else None,
-                    'battery': battery_info if battery_info != "N/A" else None,
-                    'mapLink': maps_link
+        socket.on('telemetry-update', (data) => {
+            if (data.from && data.battery) {
+                if (onlineNodes.has(data.from)) {
+                    const nodeData = onlineNodes.get(data.from);
+                    nodeData.battery = data.battery;
+                    onlineNodes.set(data.from, nodeData);
+                    updateNodeList();
+                } else {
+                    onlineNodes.set(data.from, {
+                        lastSeen: new Date(data.timestamp),
+                        battery: data.battery
+                    });
+                    updateNodeList();
                 }
-            })
-
-# Connect
-print("Connecting to Meshtastic device...")
-if CLOUD_MODE:
-    print(f"☁️  Cloud mode enabled - will forward to {SERVER_URL}")
-else:
-    print("🏠 Local mode - no cloud forwarding")
-
-print("\nCommands:")
-print("  Type 'delete <id>' to delete a message (e.g., 'delete msg_1_1234567890')")
-print("  Type 'clear' to delete all messages")
-print("  Press Ctrl+C to exit\n")
-sys.stdout.flush()
-
-interface = meshtastic.serial_interface.SerialInterface('/dev/ttyUSB0')
-
-# Subscribe to messages, position updates, and telemetry
-pub.subscribe(onReceive, "meshtastic.receive.text")
-pub.subscribe(onPosition, "meshtastic.receive.position")
-pub.subscribe(onTelemetry, "meshtastic.receive.telemetry")
-
-# Start cloud sender thread if in cloud mode
-if CLOUD_MODE:
-    sender_thread = Thread(target=cloud_sender_thread, daemon=True)
-    sender_thread.start()
-
-print("Listening for messages, position updates, and telemetry...\n")
-sys.stdout.flush()
-
-try:
-    while True:
-        time.sleep(0.1)
-        # You can add command input handling here if running interactively
-except KeyboardInterrupt:
-    print("\nStopping...")
-    interface.close()
+                
+                if (markers.has(data.from)) {
+                    const marker = markers.get(data.from);
+                    const currentPopup = marker.getPopupContent();
+                    const updatedPopup = currentPopup.replace(/🔋 Battery: [^<]+/, `🔋 Battery: ${data.battery}`);
+                    marker.setPopupContent(updatedPopup);
+                }
+            }
+        });
+    </script>
+</body>
+</html>
