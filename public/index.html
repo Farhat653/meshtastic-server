@@ -67,6 +67,27 @@
             color: #eee;
         }
         
+        body.dark-mode .delete-btn {
+            background: rgba(255, 107, 107, 0.2);
+            color: #ff6b6b;
+        }
+        
+        body.dark-mode .delete-btn:hover {
+            background: #ff6b6b;
+            color: #fff;
+        }
+        
+        body.dark-mode .clear-all-btn {
+            background: rgba(255, 107, 107, 0.2);
+            color: #ff6b6b;
+            border-color: #ff6b6b;
+        }
+        
+        body.dark-mode .clear-all-btn:hover {
+            background: #ff6b6b;
+            color: #fff;
+        }
+        
         /* Light mode */
         body.light-mode {
             background: #f5f5f5;
@@ -157,6 +178,27 @@
             border-bottom-color: #0066cc;
         }
         
+        body.light-mode .delete-btn {
+            background: rgba(220, 53, 69, 0.1);
+            color: #dc3545;
+        }
+        
+        body.light-mode .delete-btn:hover {
+            background: #dc3545;
+            color: #fff;
+        }
+        
+        body.light-mode .clear-all-btn {
+            background: transparent;
+            color: #dc3545;
+            border-color: #dc3545;
+        }
+        
+        body.light-mode .clear-all-btn:hover {
+            background: #dc3545;
+            color: #fff;
+        }
+        
         .container {
             display: grid;
             grid-template-columns: 1fr 400px;
@@ -195,7 +237,7 @@
             gap: 20px;
         }
         
-        .theme-toggle {
+        .theme-toggle, .clear-all-btn {
             background: transparent;
             border: 2px solid #00d4ff;
             color: #00d4ff;
@@ -212,6 +254,16 @@
         .theme-toggle:hover {
             background: #00d4ff;
             color: #1a1a2e;
+        }
+        
+        .clear-all-btn {
+            border-color: #ff6b6b;
+            color: #ff6b6b;
+        }
+        
+        .clear-all-btn:hover {
+            background: #ff6b6b;
+            color: #fff;
         }
         
         body.light-mode .theme-toggle {
@@ -345,7 +397,6 @@
             height: 100%;
         }
         
-        /* Dark mode map styling - vibrant with bright roads */
         body.dark-mode .map-tiles {
             filter: brightness(0.6) invert(1) contrast(3.5) hue-rotate(200deg) saturate(1.5) brightness(0.85);
         }
@@ -418,7 +469,12 @@
             margin-bottom: 12px;
             border-left: 4px solid #00d4ff;
             animation: slideIn 0.3s ease;
-            transition: background-color 0.3s ease;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+        
+        .message-card.deleting {
+            animation: slideOut 0.3s ease forwards;
         }
         
         @keyframes slideIn {
@@ -432,19 +488,56 @@
             }
         }
         
+        @keyframes slideOut {
+            to {
+                opacity: 0;
+                transform: translateX(20px);
+                max-height: 0;
+                margin-bottom: 0;
+                padding: 0;
+            }
+        }
+        
         .message-header {
             display: flex;
             justify-content: space-between;
+            align-items: center;
             margin-bottom: 8px;
             font-size: 12px;
             color: #aaa;
             transition: color 0.3s ease;
         }
         
+        .message-header-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
         .message-from {
             font-weight: bold;
             color: #00d4ff;
             transition: color 0.3s ease;
+        }
+        
+        .delete-btn {
+            background: rgba(255, 107, 107, 0.2);
+            color: #ff6b6b;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .delete-btn:hover {
+            background: #ff6b6b;
+            color: #fff;
+            transform: scale(1.05);
         }
         
         .message-text {
@@ -476,20 +569,32 @@
             padding: 12px;
             margin-bottom: 12px;
             border-left: 4px solid #4ecdc4;
-            transition: background-color 0.3s ease;
+            transition: all 0.3s ease;
             cursor: pointer;
+            position: relative;
         }
         
         .location-entry:hover {
             opacity: 0.8;
         }
         
+        .location-entry.deleting {
+            animation: slideOut 0.3s ease forwards;
+        }
+        
         .location-header {
             display: flex;
             justify-content: space-between;
+            align-items: center;
             margin-bottom: 8px;
             font-size: 12px;
             color: #aaa;
+        }
+        
+        .location-header-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
         
         .location-node {
@@ -561,6 +666,12 @@
         ::-webkit-scrollbar-thumb:hover {
             background: #00a8cc;
         }
+
+        .message-id {
+            font-size: 10px;
+            color: #666;
+            font-family: monospace;
+        }
     </style>
 </head>
 <body class="dark-mode">
@@ -571,6 +682,10 @@
                 <span>Meshtastic Monitor</span>
             </h1>
             <div class="header-right">
+                <button class="clear-all-btn" id="clearAllBtn">
+                    <span>🗑️</span>
+                    <span>Clear All</span>
+                </button>
                 <button class="theme-toggle" id="themeToggle">
                     <span id="themeIcon">☀️</span>
                     <span id="themeText">Light Mode</span>
@@ -620,6 +735,7 @@
         const themeToggle = document.getElementById('themeToggle');
         const themeIcon = document.getElementById('themeIcon');
         const themeText = document.getElementById('themeText');
+        const clearAllBtn = document.getElementById('clearAllBtn');
         const body = document.body;
         
         // Load saved theme from localStorage
@@ -640,6 +756,13 @@
             updateThemeButton();
         });
         
+        // Clear all messages
+        clearAllBtn.addEventListener('click', () => {
+            if (confirm('Are you sure you want to delete all messages and locations?')) {
+                socket.emit('clear-all');
+            }
+        });
+        
         function updateThemeButton() {
             if (body.classList.contains('dark-mode')) {
                 themeIcon.textContent = '☀️';
@@ -653,7 +776,6 @@
         // Initialize map
         const map = L.map('map').setView([1.3521, 103.8198], 11);
         
-        // Single tile layer with className for CSS filtering
         const tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors',
             maxZoom: 19,
@@ -720,7 +842,6 @@
                 const nodeColor = getNodeColor(nodeName);
                 badge.style.borderColor = nodeColor;
                 
-                // Show first MAX_VISIBLE_NODES or all if expanded
                 if (index >= visibleCount) {
                     badge.classList.add('hidden');
                 } else {
@@ -745,7 +866,6 @@
                     ${batteryText ? `<span class="node-battery ${batteryClass}">🔋 ${batteryText}</span>` : ''}
                 `;
                 
-                // Add click handler to zoom to node location
                 badge.addEventListener('click', () => {
                     if (markers.has(nodeName)) {
                         const marker = markers.get(nodeName);
@@ -758,7 +878,6 @@
                 nodeListContainer.appendChild(badge);
             });
             
-            // Add "..." button if there are more nodes
             if (hasMoreNodes && !showAllNodes) {
                 const moreButton = document.createElement('button');
                 moreButton.className = 'more-nodes';
@@ -791,9 +910,18 @@
             });
         }
         
+        function deleteMessage(messageId, element) {
+            element.classList.add('deleting');
+            setTimeout(() => {
+                element.remove();
+            }, 300);
+            socket.emit('delete-message', messageId);
+        }
+        
         function addMessage(msg) {
             const messageEl = document.createElement('div');
             messageEl.className = 'message-card';
+            messageEl.dataset.messageId = msg.id;
             const nodeColor = msg.from ? getNodeColor(msg.from) : '#00d4ff';
             messageEl.style.borderLeftColor = nodeColor;
             
@@ -809,163 +937,20 @@
             
             messageEl.innerHTML = `
                 <div class="message-header">
-                    <span class="message-from" style="color: ${nodeColor};">${msg.from || 'Unknown'}</span>
-                    <span>${time}</span>
+                    <div class="message-header-left">
+                        <span class="message-from" style="color: ${nodeColor};">${msg.from || 'Unknown'}</span>
+                        <span class="message-id">${msg.id || ''}</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span>${time}</span>
+                        <button class="delete-btn" onclick="deleteMessage('${msg.id}', this.closest('.message-card'))">
+                            🗑️
+                        </button>
+                    </div>
                 </div>
                 <div class="message-text">${msg.message || ''}</div>
                 <div class="message-meta">
                     ${msg.rssi && msg.rssi !== 'N/A' ? `<div class="meta-item">📡 RSSI: ${msg.rssi} dBm</div>` : ''}
                     ${msg.snr && msg.snr !== 'N/A' ? `<div class="meta-item">📶 SNR: ${msg.snr} dB</div>` : ''}
                     ${msg.battery && msg.battery !== 'N/A' ? `<div class="meta-item">🔋 ${msg.battery}</div>` : ''}
-                    ${msg.location ? `<div class="meta-item">📍 ${msg.location}</div>` : ''}
-                </div>
-            `;
-            
-            messagesContainer.insertBefore(messageEl, messagesContainer.firstChild);
-            
-            while (messagesContainer.children.length > 50) {
-                messagesContainer.removeChild(messagesContainer.lastChild);
-            }
-        }
-        
-        function addLocationLog(pos) {
-            locationHistory.unshift(pos);
-            
-            // Keep only last 100 location entries
-            if (locationHistory.length > 100) {
-                locationHistory.pop();
-            }
-            
-            const locationEl = document.createElement('div');
-            locationEl.className = 'location-entry';
-            const nodeColor = getNodeColor(pos.from);
-            locationEl.style.borderLeftColor = nodeColor;
-            
-            const time = new Date(pos.timestamp).toLocaleString();
-            
-            locationEl.innerHTML = `
-                <div class="location-header">
-                    <span class="location-node" style="color: ${nodeColor};">${pos.from || 'Unknown'}</span>
-                    <span>${time}</span>
-                </div>
-                <div class="location-coords">📍 ${pos.lat.toFixed(6)}, ${pos.lng.toFixed(6)}</div>
-                <div class="location-meta">
-                    ${pos.altitude ? `<span>⛰️ ${pos.altitude}</span>` : ''}
-                    ${pos.battery && pos.battery !== 'N/A' ? `<span>🔋 ${pos.battery}</span>` : ''}
-                    ${pos.rssi && pos.rssi !== 'N/A' ? `<span>📡 ${pos.rssi} dBm</span>` : ''}
-                    ${pos.snr && pos.snr !== 'N/A' ? `<span>📶 ${pos.snr} dB</span>` : ''}
-                </div>
-            `;
-            
-            // Click to zoom to location on map
-            locationEl.addEventListener('click', () => {
-                map.setView([pos.lat, pos.lng], 16);
-                if (markers.has(pos.from)) {
-                    markers.get(pos.from).openPopup();
-                }
-            });
-            
-            locationsContainer.insertBefore(locationEl, locationsContainer.firstChild);
-            
-            // Keep only 100 displayed entries
-            while (locationsContainer.children.length > 100) {
-                locationsContainer.removeChild(locationsContainer.lastChild);
-            }
-        }
-        
-        function updatePosition(pos) {
-            if (pos.from) {
-                onlineNodes.set(pos.from, { 
-                    lastSeen: new Date(pos.timestamp),
-                    battery: pos.battery
-                });
-                updateNodeList();
-            }
-            
-            // Add to location log
-            addLocationLog(pos);
-            
-            const nodeColor = getNodeColor(pos.from);
-            
-            const popupContent = `
-                <div class="popup-title" style="color: ${nodeColor};">${pos.from || 'Unknown Node'}</div>
-                <div class="popup-info">
-                    <div>📍 ${pos.lat.toFixed(6)}, ${pos.lng.toFixed(6)}</div>
-                    ${pos.altitude ? `<div>⛰️ Altitude: ${pos.altitude}</div>` : ''}
-                    ${pos.battery && pos.battery !== 'N/A' ? `<div>🔋 Battery: ${pos.battery}</div>` : ''}
-                    ${pos.rssi && pos.rssi !== 'N/A' ? `<div>📡 RSSI: ${pos.rssi} dBm</div>` : ''}
-                    ${pos.snr && pos.snr !== 'N/A' ? `<div>📶 SNR: ${pos.snr} dB</div>` : ''}
-                    <div>🕐 ${new Date(pos.timestamp).toLocaleString()}</div>
-                </div>
-            `;
-            
-            if (markers.has(pos.from)) {
-                const marker = markers.get(pos.from);
-                marker.setLatLng([pos.lat, pos.lng]);
-                marker.setPopupContent(popupContent);
-            } else {
-                const marker = L.marker([pos.lat, pos.lng], { icon: createNodeIcon(pos.from) })
-                    .addTo(map)
-                    .bindPopup(popupContent);
-                markers.set(pos.from, marker);
-            }
-            
-            if (markers.size === 1) {
-                map.setView([pos.lat, pos.lng], 13);
-            }
-        }
-        
-        socket.on('initial-data', (data) => {
-            data.messages.forEach(msg => addMessage(msg));
-            data.positions.forEach(pos => updatePosition(pos));
-            
-            if (markers.size > 0) {
-                const bounds = L.latLngBounds(Array.from(markers.values()).map(m => m.getLatLng()));
-                map.fitBounds(bounds, { padding: [50, 50] });
-            }
-        });
-        
-        socket.on('new-message', (msg) => {
-            addMessage(msg);
-        });
-        
-        socket.on('position-update', (pos) => {
-            updatePosition(pos);
-        });
-        
-        socket.on('disconnect', () => {
-            document.querySelector('.status-dot').style.background = '#ff0000';
-            document.querySelector('.status span').textContent = 'Disconnected';
-        });
-        
-        socket.on('connect', () => {
-            document.querySelector('.status-dot').style.background = '#00ff00';
-            document.querySelector('.status span').textContent = 'Connected';
-        });
-        
-        socket.on('telemetry-update', (data) => {
-            if (data.from && data.battery) {
-                if (onlineNodes.has(data.from)) {
-                    const nodeData = onlineNodes.get(data.from);
-                    nodeData.battery = data.battery;
-                    onlineNodes.set(data.from, nodeData);
-                    updateNodeList();
-                } else {
-                    onlineNodes.set(data.from, {
-                        lastSeen: new Date(data.timestamp),
-                        battery: data.battery
-                    });
-                    updateNodeList();
-                }
-                
-                if (markers.has(data.from)) {
-                    const marker = markers.get(data.from);
-                    const currentPopup = marker.getPopupContent();
-                    const updatedPopup = currentPopup.replace(/🔋 Battery: [^<]+/, `🔋 Battery: ${data.battery}`);
-                    marker.setPopupContent(updatedPopup);
-                }
-            }
-        });
-    </script>
-</body>
-</html>
+                    ${msg.location ? `<div class
