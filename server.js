@@ -21,6 +21,9 @@ app.use(helmet({
     contentSecurityPolicy: false, // Allow WebSocket connections
 }));
 
+// Add JSON body parser for API endpoints
+app.use(express.json({ limit: '10mb' }));
+
 // Rate limiting
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
@@ -37,7 +40,179 @@ const nodePositions = new Map();
 const nodeTelemetry = new Map();
 const MAX_MESSAGES = 50;
 
-// Parse Python script output
+// ============================================================================
+// NEW: API ENDPOINTS FOR PYTHON SCRIPT CLOUD MODE
+// ============================================================================
+
+// Batch message receiver endpoint
+app.post('/api/messages/batch', (req, res) => {
+    try {
+        const { messages: batchMessages } = req.body;
+        
+        if (!batchMessages || !Array.isArray(batchMessages)) {
+            return res.status(400).json({ error: 'Invalid batch format' });
+        }
+
+        let processed = {
+            messages: 0,
+            telemetry: 0,
+            positions: 0
+        };
+
+        // Process each message in the batch
+        batchMessages.forEach(item => {
+            const { type, data } = item;
+
+            switch(type) {
+                case 'message':
+                    if (data.message) {
+                        const packet = {
+                            type: 'message',
+                            timestamp: data.timestamp,
+                            from: data.from,
+                            message: data.message,
+                            location: data.location,
+                            altitude: data.altitude,
+                            rssi: data.rssi,
+                            snr: data.snr,
+                            battery: data.battery,
+                            mapLink: data.mapLink
+                        };
+                        
+                        recentMessages.push(packet);
+                        if (recentMessages.length > MAX_MESSAGES) {
+                            recentMessages.shift();
+                        }
+                        io.emit('new-message', packet);
+                        processed.messages++;
+                    }
+                    break;
+
+                case 'position':
+                    if (data.location) {
+                        const [lat, lng] = data.location.split(',').map(s => parseFloat(s.trim()));
+                        if (!isNaN(lat) && !isNaN(lng)) {
+                            const posData = {
+                                lat,
+                                lng,
+                                from: data.from,
+                                timestamp: data.timestamp,
+                                altitude: data.altitude,
+                                battery: data.battery,
+                                rssi: data.rssi,
+                                snr: data.snr
+                            };
+                            
+                            nodePositions.set(data.from, posData);
+                            io.emit('position-update', posData);
+                            processed.positions++;
+                        }
+                    }
+                    break;
+
+                case 'telemetry':
+                    if (data.from) {
+                        const telemetryData = {
+                            battery: data.battery,
+                            voltage: data.voltage,
+                            channelUtil: data.channelUtil,
+                            airUtil: data.airUtil,
+                            uptime: data.uptime,
+                            timestamp: data.timestamp
+                        };
+                        
+                        nodeTelemetry.set(data.from, telemetryData);
+                        
+                        // Update battery in existing position if available
+                        if (nodePositions.has(data.from)) {
+                            const pos = nodePositions.get(data.from);
+                            pos.battery = data.battery;
+                            nodePositions.set(data.from, pos);
+                        }
+                        
+                        io.emit('telemetry-update', {
+                            from: data.from,
+                            ...telemetryData
+                        });
+                        
+                        processed.telemetry++;
+                    }
+                    break;
+            }
+        });
+
+        console.log(`✓ API Batch processed: ${processed.messages} msgs, ${processed.positions} pos, ${processed.telemetry} telem`);
+
+        res.json({ 
+            success: true, 
+            processed
+        });
+
+    } catch (error) {
+        console.error(`❌ Error processing batch: ${error.message}`);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Delete a specific message
+app.post('/api/messages/delete', (req, res) => {
+    try {
+        const { messageId } = req.body;
+        
+        if (!messageId) {
+            return res.status(400).json({ error: 'Message ID required' });
+        }
+
+        const initialCount = recentMessages.length;
+        const index = recentMessages.findIndex(msg => msg.id === messageId);
+        
+        if (index !== -1) {
+            recentMessages.splice(index, 1);
+            console.log(`🗑️  Deleted message: ${messageId}`);
+            
+            // Notify all clients
+            io.emit('message-deleted', { messageId });
+            
+            res.json({ success: true, deleted: true });
+        } else {
+            res.status(404).json({ success: false, message: 'Message not found' });
+        }
+
+    } catch (error) {
+        console.error(`❌ Error deleting message: ${error.message}`);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Clear all messages
+app.post('/api/messages/clear', (req, res) => {
+    try {
+        const totalCleared = recentMessages.length + nodePositions.size + nodeTelemetry.size;
+        
+        recentMessages.length = 0;
+        nodePositions.clear();
+        nodeTelemetry.clear();
+        
+        console.log(`🗑️  Cleared all data: ${totalCleared} items`);
+        
+        // Notify all clients
+        io.emit('all-cleared');
+        
+        res.json({ 
+            success: true, 
+            cleared: totalCleared 
+        });
+
+    } catch (error) {
+        console.error(`❌ Error clearing messages: ${error.message}`);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================================================
+// ORIGINAL CODE: Parse Python script output
+// ============================================================================
+
 function parsePythonOutput(data) {
     const lines = data.toString().split('\n');
     let currentPacket = null;
@@ -252,7 +427,9 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
         uptime: process.uptime(),
-        connections: connectedClients.size 
+        connections: connectedClients.size,
+        messages: recentMessages.length,
+        nodes: nodePositions.size
     });
 });
 
@@ -260,6 +437,11 @@ app.get('/health', (req, res) => {
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
     console.log(`Access from network: http://YOUR_IP:${PORT}`);
+    console.log(`API endpoints available:`);
+    console.log(`  POST /api/messages/batch   - Receive batch messages`);
+    console.log(`  POST /api/messages/delete  - Delete a message`);
+    console.log(`  POST /api/messages/clear   - Clear all messages`);
+    console.log(`  GET  /health               - Server health check`);
 });
 
 // Cleanup
