@@ -67,7 +67,6 @@ app.post('/api/messages/batch', (req, res) => {
                 case 'message':
                     if (data.message) {
                         const packet = {
-                            id: data.id, // Include message ID
                             type: 'message',
                             timestamp: data.timestamp,
                             from: data.from,
@@ -94,7 +93,6 @@ app.post('/api/messages/batch', (req, res) => {
                         const [lat, lng] = data.location.split(',').map(s => parseFloat(s.trim()));
                         if (!isNaN(lat) && !isNaN(lng)) {
                             const posData = {
-                                id: data.id, // Include position ID
                                 lat,
                                 lng,
                                 from: data.from,
@@ -173,7 +171,7 @@ app.post('/api/messages/delete', (req, res) => {
             console.log(`🗑️  Deleted message: ${messageId}`);
             
             // Notify all clients
-            io.emit('message-deleted', messageId);
+            io.emit('message-deleted', { messageId });
             
             res.json({ success: true, deleted: true });
         } else {
@@ -227,18 +225,13 @@ function parsePythonOutput(data) {
                 processPacket(currentPacket);
             }
             
-            // Extract message ID from the line
-            const idMatch = line.match(/\[ID:\s*([^\]]+)\]/);
-            const messageId = idMatch ? idMatch[1] : null;
-            
-            const timestamp = line.match(/\[([\d-]+ [\d:]+)\]/)?.[1];
+            const timestamp = line.match(/\[(.*?)\]/)?.[1];
             let packetType = 'unknown';
             if (line.includes('📨 MESSAGE')) packetType = 'message';
             else if (line.includes('📍 POSITION UPDATE')) packetType = 'position';
             else if (line.includes('📊 TELEMETRY')) packetType = 'telemetry';
             
             currentPacket = {
-                id: messageId,
                 type: packetType,
                 timestamp: timestamp || new Date().toISOString(),
                 from: null,
@@ -358,7 +351,6 @@ function processPacket(packet) {
             }
             
             const posData = {
-                id: packet.id,
                 lat,
                 lng,
                 from: packet.from,
@@ -406,56 +398,6 @@ io.on('connection', (socket) => {
     socket.emit('initial-data', {
         messages: enrichedMessages,
         positions: enrichedPositions
-    });
-    
-    // ============================================================================
-    // NEW: Socket.io handlers for delete operations
-    // ============================================================================
-    
-    // Handle individual message deletion from web UI
-    socket.on('delete-message', (messageId) => {
-        console.log(`🗑️  Client requested delete: ${messageId}`);
-        
-        // Remove from messages
-        const msgIndex = recentMessages.findIndex(msg => msg.id === messageId);
-        if (msgIndex !== -1) {
-            recentMessages.splice(msgIndex, 1);
-            console.log(`   ✓ Deleted from messages array`);
-        }
-        
-        // Remove from positions if it's a position ID
-        let deletedFromPositions = false;
-        for (const [key, value] of nodePositions.entries()) {
-            if (value.id === messageId) {
-                nodePositions.delete(key);
-                deletedFromPositions = true;
-                console.log(`   ✓ Deleted from positions map`);
-                break;
-            }
-        }
-        
-        // Broadcast to all clients
-        io.emit('message-deleted', messageId);
-        
-        if (msgIndex === -1 && !deletedFromPositions) {
-            console.log(`   ⚠️  Message ${messageId} not found`);
-        }
-    });
-    
-    // Handle clear all from web UI
-    socket.on('clear-all', () => {
-        console.log(`🗑️  Client requested clear all`);
-        
-        const totalCleared = recentMessages.length + nodePositions.size + nodeTelemetry.size;
-        
-        recentMessages.length = 0;
-        nodePositions.clear();
-        nodeTelemetry.clear();
-        
-        console.log(`   ✓ Cleared ${totalCleared} items`);
-        
-        // Broadcast to all clients
-        io.emit('all-cleared');
     });
     
     socket.on('disconnect', () => {
