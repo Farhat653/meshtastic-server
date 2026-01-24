@@ -23,7 +23,8 @@ const NODE_NAMES = {
     '0x9e755a5c': 'Node Alpha',
     '0x9e76074c': 'Node Foxtrot',
     '0x9e75877c': 'Node Delta',
-    '0xdb58af14': 'Node Bravo'
+    '0xdb58af14': 'Node Bravo',
+    '0x336679e4': 'Staion Node'
 };
 
 // Helper function to get node name
