@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Meshtastic Monitor</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
     <style>
@@ -65,11 +65,6 @@
         body.dark-mode .leaflet-popup-content-wrapper {
             background: #16213e;
             color: #eee;
-        }
-        
-        body.dark-mode .mobile-toggle {
-            background: #0f3460;
-            color: #00d4ff;
         }
         
         /* Light mode */
@@ -162,28 +157,21 @@
             border-bottom-color: #0066cc;
         }
         
-        body.light-mode .mobile-toggle {
-            background: #e8f4f8;
-            color: #0066cc;
-        }
-        
         .container {
             display: grid;
             grid-template-columns: 1fr 400px;
-            grid-template-rows: auto 1fr;
+            grid-template-rows: 60px 1fr;
             height: 100vh;
         }
         
         header {
             grid-column: 1 / -1;
-            padding: 15px 20px;
+            padding: 15px 30px;
             display: flex;
             align-items: center;
             justify-content: space-between;
             box-shadow: 0 2px 10px rgba(0,0,0,0.3);
             transition: background-color 0.3s ease;
-            flex-wrap: wrap;
-            gap: 10px;
         }
         
         header h1 {
@@ -204,8 +192,7 @@
         .header-right {
             display: flex;
             align-items: center;
-            gap: 15px;
-            flex-wrap: wrap;
+            gap: 20px;
         }
         
         .theme-toggle {
@@ -358,6 +345,7 @@
             height: 100%;
         }
         
+        /* Dark mode map styling - vibrant with bright roads */
         body.dark-mode .map-tiles {
             filter: brightness(0.6) invert(1) contrast(3.5) hue-rotate(200deg) saturate(1.5) brightness(0.85);
         }
@@ -366,7 +354,7 @@
             display: flex;
             flex-direction: column;
             overflow: hidden;
-            transition: background-color 0.3s ease, transform 0.3s ease;
+            transition: background-color 0.3s ease;
         }
         
         .sidebar-header {
@@ -573,166 +561,6 @@
         ::-webkit-scrollbar-thumb:hover {
             background: #00a8cc;
         }
-        
-        /* Mobile toggle button */
-        .mobile-toggle {
-            display: none;
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            width: 56px;
-            height: 56px;
-            border-radius: 50%;
-            border: none;
-            font-size: 24px;
-            cursor: pointer;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            z-index: 1001;
-            transition: all 0.3s ease;
-        }
-        
-        .mobile-toggle:active {
-            transform: scale(0.95);
-        }
-        
-        /* Mobile styles */
-        @media (max-width: 768px) {
-            .container {
-                grid-template-columns: 1fr;
-                grid-template-rows: auto 1fr;
-            }
-            
-            header {
-                padding: 10px 15px;
-            }
-            
-            header h1 {
-                font-size: 18px;
-            }
-            
-            .logo {
-                width: 32px;
-                height: 32px;
-            }
-            
-            .header-right {
-                width: 100%;
-                justify-content: space-between;
-                gap: 10px;
-            }
-            
-            .theme-toggle {
-                padding: 6px 12px;
-                font-size: 12px;
-            }
-            
-            .nodes-status {
-                padding: 6px 12px;
-                font-size: 14px;
-            }
-            
-            .node-count {
-                font-size: 16px;
-            }
-            
-            .node-list {
-                display: none;
-            }
-            
-            .status {
-                font-size: 12px;
-            }
-            
-            .sidebar {
-                position: fixed;
-                top: 0;
-                right: 0;
-                bottom: 0;
-                width: 85%;
-                max-width: 400px;
-                z-index: 1000;
-                transform: translateX(100%);
-                box-shadow: -4px 0 12px rgba(0,0,0,0.3);
-            }
-            
-            .sidebar.active {
-                transform: translateX(0);
-            }
-            
-            .sidebar-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-            }
-            
-            .close-sidebar {
-                background: transparent;
-                border: none;
-                color: inherit;
-                font-size: 24px;
-                cursor: pointer;
-                padding: 0;
-                width: 32px;
-                height: 32px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            }
-            
-            .mobile-toggle {
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            }
-            
-            #map {
-                width: 100%;
-                height: 100%;
-            }
-            
-            .message-meta {
-                grid-template-columns: 1fr;
-            }
-        }
-        
-        /* Tablet styles */
-        @media (min-width: 769px) and (max-width: 1024px) {
-            .container {
-                grid-template-columns: 1fr 320px;
-            }
-            
-            .sidebar {
-                width: 320px;
-            }
-            
-            header h1 {
-                font-size: 20px;
-            }
-            
-            .node-list {
-                max-width: 300px;
-            }
-        }
-        
-        /* Very small mobile devices */
-        @media (max-width: 480px) {
-            header h1 span {
-                display: none;
-            }
-            
-            .sidebar {
-                width: 100%;
-                max-width: 100%;
-            }
-            
-            .theme-toggle span:last-child {
-                display: none;
-            }
-            
-            .nodes-status {
-                padding: 6px 10px;
-            }
-        }
     </style>
 </head>
 <body class="dark-mode">
@@ -762,11 +590,8 @@
         
         <div id="map"></div>
         
-        <div class="sidebar" id="sidebar">
-            <div class="sidebar-header">
-                <span>Activity Feed</span>
-                <button class="close-sidebar" id="closeSidebar">✕</button>
-            </div>
+        <div class="sidebar">
+            <div class="sidebar-header">Activity Feed</div>
             <div class="combined-content">
                 <div class="section-title" id="locationTitle">
                     <span>📍 Location Logs</span>
@@ -786,35 +611,10 @@
         </div>
     </div>
     
-    <button class="mobile-toggle" id="mobileToggle">📋</button>
-    
     <script src="/socket.io/socket.io.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
     <script>
         const socket = io();
-        
-        // Mobile sidebar toggle
-        const sidebar = document.getElementById('sidebar');
-        const mobileToggle = document.getElementById('mobileToggle');
-        const closeSidebar = document.getElementById('closeSidebar');
-        
-        mobileToggle.addEventListener('click', () => {
-            sidebar.classList.add('active');
-        });
-        
-        closeSidebar.addEventListener('click', () => {
-            sidebar.classList.remove('active');
-        });
-        
-        // Close sidebar when clicking outside on mobile
-        document.addEventListener('click', (e) => {
-            if (window.innerWidth <= 768 && 
-                sidebar.classList.contains('active') && 
-                !sidebar.contains(e.target) && 
-                !mobileToggle.contains(e.target)) {
-                sidebar.classList.remove('active');
-            }
-        });
         
         // Theme toggle functionality
         const themeToggle = document.getElementById('themeToggle');
@@ -822,6 +622,7 @@
         const themeText = document.getElementById('themeText');
         const body = document.body;
         
+        // Load saved theme from localStorage
         const savedTheme = localStorage.getItem('theme') || 'dark-mode';
         body.className = savedTheme;
         updateThemeButton();
@@ -852,6 +653,7 @@
         // Initialize map
         const map = L.map('map').setView([1.3521, 103.8198], 11);
         
+        // Single tile layer with className for CSS filtering
         const tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors',
             maxZoom: 19,
@@ -918,6 +720,7 @@
                 const nodeColor = getNodeColor(nodeName);
                 badge.style.borderColor = nodeColor;
                 
+                // Show first MAX_VISIBLE_NODES or all if expanded
                 if (index >= visibleCount) {
                     badge.classList.add('hidden');
                 } else {
@@ -942,6 +745,7 @@
                     ${batteryText ? `<span class="node-battery ${batteryClass}">🔋 ${batteryText}</span>` : ''}
                 `;
                 
+                // Add click handler to zoom to node location
                 badge.addEventListener('click', () => {
                     if (markers.has(nodeName)) {
                         const marker = markers.get(nodeName);
@@ -954,6 +758,7 @@
                 nodeListContainer.appendChild(badge);
             });
             
+            // Add "..." button if there are more nodes
             if (hasMoreNodes && !showAllNodes) {
                 const moreButton = document.createElement('button');
                 moreButton.className = 'more-nodes';
@@ -996,4 +801,171 @@
             
             if (msg.from) {
                 onlineNodes.set(msg.from, { 
-                    lastS
+                    lastSeen: new Date(msg.timestamp),
+                    battery: msg.battery
+                });
+                updateNodeList();
+            }
+            
+            messageEl.innerHTML = `
+                <div class="message-header">
+                    <span class="message-from" style="color: ${nodeColor};">${msg.from || 'Unknown'}</span>
+                    <span>${time}</span>
+                </div>
+                <div class="message-text">${msg.message || ''}</div>
+                <div class="message-meta">
+                    ${msg.rssi && msg.rssi !== 'N/A' ? `<div class="meta-item">📡 RSSI: ${msg.rssi} dBm</div>` : ''}
+                    ${msg.snr && msg.snr !== 'N/A' ? `<div class="meta-item">📶 SNR: ${msg.snr} dB</div>` : ''}
+                    ${msg.battery && msg.battery !== 'N/A' ? `<div class="meta-item">🔋 ${msg.battery}</div>` : ''}
+                    ${msg.location ? `<div class="meta-item">📍 ${msg.location}</div>` : ''}
+                </div>
+            `;
+            
+            messagesContainer.insertBefore(messageEl, messagesContainer.firstChild);
+            
+            while (messagesContainer.children.length > 50) {
+                messagesContainer.removeChild(messagesContainer.lastChild);
+            }
+        }
+        
+        function addLocationLog(pos) {
+            locationHistory.unshift(pos);
+            
+            // Keep only last 100 location entries
+            if (locationHistory.length > 100) {
+                locationHistory.pop();
+            }
+            
+            const locationEl = document.createElement('div');
+            locationEl.className = 'location-entry';
+            const nodeColor = getNodeColor(pos.from);
+            locationEl.style.borderLeftColor = nodeColor;
+            
+            const time = new Date(pos.timestamp).toLocaleString();
+            
+            locationEl.innerHTML = `
+                <div class="location-header">
+                    <span class="location-node" style="color: ${nodeColor};">${pos.from || 'Unknown'}</span>
+                    <span>${time}</span>
+                </div>
+                <div class="location-coords">📍 ${pos.lat.toFixed(6)}, ${pos.lng.toFixed(6)}</div>
+                <div class="location-meta">
+                    ${pos.altitude ? `<span>⛰️ ${pos.altitude}</span>` : ''}
+                    ${pos.battery && pos.battery !== 'N/A' ? `<span>🔋 ${pos.battery}</span>` : ''}
+                    ${pos.rssi && pos.rssi !== 'N/A' ? `<span>📡 ${pos.rssi} dBm</span>` : ''}
+                    ${pos.snr && pos.snr !== 'N/A' ? `<span>📶 ${pos.snr} dB</span>` : ''}
+                </div>
+            `;
+            
+            // Click to zoom to location on map
+            locationEl.addEventListener('click', () => {
+                map.setView([pos.lat, pos.lng], 16);
+                if (markers.has(pos.from)) {
+                    markers.get(pos.from).openPopup();
+                }
+            });
+            
+            locationsContainer.insertBefore(locationEl, locationsContainer.firstChild);
+            
+            // Keep only 100 displayed entries
+            while (locationsContainer.children.length > 100) {
+                locationsContainer.removeChild(locationsContainer.lastChild);
+            }
+        }
+        
+        function updatePosition(pos) {
+            if (pos.from) {
+                onlineNodes.set(pos.from, { 
+                    lastSeen: new Date(pos.timestamp),
+                    battery: pos.battery
+                });
+                updateNodeList();
+            }
+            
+            // Add to location log
+            addLocationLog(pos);
+            
+            const nodeColor = getNodeColor(pos.from);
+            
+            const popupContent = `
+                <div class="popup-title" style="color: ${nodeColor};">${pos.from || 'Unknown Node'}</div>
+                <div class="popup-info">
+                    <div>📍 ${pos.lat.toFixed(6)}, ${pos.lng.toFixed(6)}</div>
+                    ${pos.altitude ? `<div>⛰️ Altitude: ${pos.altitude}</div>` : ''}
+                    ${pos.battery && pos.battery !== 'N/A' ? `<div>🔋 Battery: ${pos.battery}</div>` : ''}
+                    ${pos.rssi && pos.rssi !== 'N/A' ? `<div>📡 RSSI: ${pos.rssi} dBm</div>` : ''}
+                    ${pos.snr && pos.snr !== 'N/A' ? `<div>📶 SNR: ${pos.snr} dB</div>` : ''}
+                    <div>🕐 ${new Date(pos.timestamp).toLocaleString()}</div>
+                </div>
+            `;
+            
+            if (markers.has(pos.from)) {
+                const marker = markers.get(pos.from);
+                marker.setLatLng([pos.lat, pos.lng]);
+                marker.setPopupContent(popupContent);
+            } else {
+                const marker = L.marker([pos.lat, pos.lng], { icon: createNodeIcon(pos.from) })
+                    .addTo(map)
+                    .bindPopup(popupContent);
+                markers.set(pos.from, marker);
+            }
+            
+            if (markers.size === 1) {
+                map.setView([pos.lat, pos.lng], 13);
+            }
+        }
+        
+        socket.on('initial-data', (data) => {
+            data.messages.forEach(msg => addMessage(msg));
+            data.positions.forEach(pos => updatePosition(pos));
+            
+            if (markers.size > 0) {
+                const bounds = L.latLngBounds(Array.from(markers.values()).map(m => m.getLatLng()));
+                map.fitBounds(bounds, { padding: [50, 50] });
+            }
+        });
+        
+        socket.on('new-message', (msg) => {
+            addMessage(msg);
+        });
+        
+        socket.on('position-update', (pos) => {
+            updatePosition(pos);
+        });
+        
+        socket.on('disconnect', () => {
+            document.querySelector('.status-dot').style.background = '#ff0000';
+            document.querySelector('.status span').textContent = 'Disconnected';
+        });
+        
+        socket.on('connect', () => {
+            document.querySelector('.status-dot').style.background = '#00ff00';
+            document.querySelector('.status span').textContent = 'Connected';
+        });
+        
+        socket.on('telemetry-update', (data) => {
+            if (data.from && data.battery) {
+                if (onlineNodes.has(data.from)) {
+                    const nodeData = onlineNodes.get(data.from);
+                    nodeData.battery = data.battery;
+                    onlineNodes.set(data.from, nodeData);
+                    updateNodeList();
+                } else {
+                    onlineNodes.set(data.from, {
+                        lastSeen: new Date(data.timestamp),
+                        battery: data.battery
+                    });
+                    updateNodeList();
+                }
+                
+                if (markers.has(data.from)) {
+                    const marker = markers.get(data.from);
+                    const currentPopup = marker.getPopupContent();
+                    const updatedPopup = currentPopup.replace(/🔋 Battery: [^<]+/, `🔋 Battery: ${data.battery}`);
+                    marker.setPopupContent(updatedPopup);
+                }
+            }
+        });
+    </script>
+</body>
+</html>
