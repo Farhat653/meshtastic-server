@@ -33,6 +33,7 @@ NODE_NAMES = {
     0x9e76074c: "Node Foxtrot",
     0x9e75877c: "Node Delta",
     0xdb58af14: "Node Bravo"
+    0x336679e4: "Master Node"
 }
 
 # Print the node mapping on startup for verification
