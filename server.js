@@ -16,6 +16,21 @@ const io = socketIo(server, {
 
 const PORT = process.env.PORT || 3000;
 
+// Node ID to Name mapping
+const NODE_NAMES = {
+    '0x336879dc': 'Node Echo',
+    '0x9e7595c4': 'Node Charlie',
+    '0x9e755a5c': 'Node Alpha',
+    '0x9e76074c': 'Node Foxtrot',
+    '0x9e75877c': 'Node Delta',
+    '0xdb58af14': 'Node Bravo'
+};
+
+// Helper function to get node name
+function getNodeName(nodeId) {
+    return NODE_NAMES[nodeId] || nodeId;
+}
+
 // Security middleware
 app.use(helmet({
     contentSecurityPolicy: false, // Allow WebSocket connections
@@ -41,7 +56,7 @@ const nodeTelemetry = new Map();
 const MAX_MESSAGES = 50;
 
 // ============================================================================
-// NEW: API ENDPOINTS FOR PYTHON SCRIPT CLOUD MODE
+// NEW:  ENDPOINTS FOR PYTHON SCRIPT CLOUD MODE
 // ============================================================================
 
 // Batch message receiver endpoint
@@ -58,6 +73,11 @@ app.post('/api/messages/batch', (req, res) => {
             telemetry: 0,
             positions: 0
         };
+
+        // Track unique nodes for each type
+        const messageNodes = new Set();
+        const telemetryNodes = new Set();
+        const positionNodes = new Set();
 
         // Process each message in the batch
         batchMessages.forEach(item => {
@@ -85,6 +105,7 @@ app.post('/api/messages/batch', (req, res) => {
                         }
                         io.emit('new-message', packet);
                         processed.messages++;
+                        messageNodes.add(data.from);
                     }
                     break;
 
@@ -106,6 +127,7 @@ app.post('/api/messages/batch', (req, res) => {
                             nodePositions.set(data.from, posData);
                             io.emit('position-update', posData);
                             processed.positions++;
+                            positionNodes.add(data.from);
                         }
                     }
                     break;
@@ -136,12 +158,35 @@ app.post('/api/messages/batch', (req, res) => {
                         });
                         
                         processed.telemetry++;
+                        telemetryNodes.add(data.from);
                     }
                     break;
             }
         });
 
-        console.log(`✓ API Batch processed: ${processed.messages} msgs, ${processed.positions} pos, ${processed.telemetry} telem`);
+        // Build detailed log message
+        const logParts = [];
+        
+        if (processed.messages > 0) {
+            const nodes = Array.from(messageNodes).map(getNodeName).join(', ');
+            logParts.push(`${processed.messages} msg (${nodes})`);
+        }
+        
+        if (processed.positions > 0) {
+            const nodes = Array.from(positionNodes).map(getNodeName).join(', ');
+            logParts.push(`${processed.positions} pos (${nodes})`);
+        }
+        
+        if (processed.telemetry > 0) {
+            const nodes = Array.from(telemetryNodes).map(getNodeName).join(', ');
+            logParts.push(`${processed.telemetry} telem (${nodes})`);
+        }
+
+        const logMessage = logParts.length > 0 
+            ? `✓ API Batch processed: ${logParts.join(', ')}`
+            : '✓ API Batch processed: no data';
+
+        console.log(logMessage);
 
         res.json({ 
             success: true, 
@@ -324,7 +369,7 @@ function processPacket(packet) {
             ...telemetryData
         });
         
-        console.log(`Updated telemetry for ${packet.from}: ${packet.battery}`);
+        console.log(`Updated telemetry for ${getNodeName(packet.from)}: ${packet.battery}`);
     }
     
     if (packet.type === 'message' && packet.message) {
